@@ -1,4 +1,8 @@
-ai-agent.firmspace.eu, www.ai-agent.firmspace.eu {
+ai-agent.firmspace.eu {
+	redir https://www.ai-agent.firmspace.eu{uri} permanent
+}
+
+www.ai-agent.firmspace.eu {
 	@api path /api/*
 	handle @api {
 		reverse_proxy 127.0.0.1:3010
