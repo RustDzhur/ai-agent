@@ -35,3 +35,7 @@ export const openAiCredentialSchema = z.object({
 export const assistantRunSchema = z.object({
   prompt: z.string().trim().min(1).max(6_000),
 }).strict();
+
+export const tenantAgentStatusSchema = z.object({
+  status: z.enum(['active', 'paused']),
+}).strict();

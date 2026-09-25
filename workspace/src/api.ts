@@ -58,6 +58,9 @@ export const errorText = (error: unknown): string => {
     case 'permission_denied': return 'Sie haben für diese Änderung keine Berechtigung.';
     case 'organization_access_required': return 'Auf diese Organisation besteht kein Zugriff.';
     case 'provider_not_configured': return 'OpenAI ist für diese Organisation noch nicht verbunden.';
+    case 'agent_not_available': return 'Dieser Agent ist aktuell nicht verfügbar.';
+    case 'agent_not_installed': return 'Dieser Agent ist in Ihrer Organisation nicht installiert.';
+    case 'agent_paused': return 'Dieser Agent ist pausiert. Setzen Sie ihn vor dem Start fort.';
     case 'openai_key_invalid': return 'Der OpenAI-Schlüssel wurde abgelehnt. Bitte prüfen Sie ihn und versuchen Sie es erneut.';
     case 'openai_key_insufficient_permissions': return 'Der OpenAI-Schlüssel hat nicht die nötigen Berechtigungen.';
     case 'openai_model_unavailable': return 'Der OpenAI-Schlüssel hat keinen Zugriff auf GPT-6 Luna.';

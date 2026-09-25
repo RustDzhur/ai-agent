@@ -10,12 +10,12 @@ import { api, errorText, updateCsrfToken, type Organization, type Session } from
 type Section = 'dashboard' | 'agents' | 'marketplace' | 'automations' | 'tasks' | 'documents' | 'knowledge' | 'integrations' | 'analytics' | 'team' | 'billing' | 'settings';
 type Member = { user_id: string; full_name: string; email: string; role: Organization['role']; created_at: string };
 type AgentRun = { id: string; status: 'running' | 'completed' | 'failed'; prompt: string; response: string | null; error_code: string | null; model: string; created_at: string };
-type AgentTemplate = { slug: string; version: number; name: string; category: string; description: string; default_model: string; required_provider: string };
+type AgentTemplate = { slug: string; version: number; name: string; category: string; description: string; default_model: string; required_provider: string; installed_status?: 'active' | 'paused' | null };
 
 const sections: { id: Section; label: string; icon: typeof Gauge; group: string; ready: boolean }[] = [
   { id: 'dashboard', label: 'Übersicht', icon: Gauge, group: 'Arbeitsbereich', ready: true },
   { id: 'agents', label: 'Meine Agenten', icon: Bot, group: 'KI-Team', ready: true },
-  { id: 'marketplace', label: 'Agentenkatalog', icon: Layers3, group: 'KI-Team', ready: false },
+  { id: 'marketplace', label: 'Agentenkatalog', icon: Layers3, group: 'KI-Team', ready: true },
   { id: 'automations', label: 'Automatisierungen', icon: Workflow, group: 'Abläufe', ready: false },
   { id: 'tasks', label: 'Aufgaben', icon: GitBranch, group: 'Abläufe', ready: false },
   { id: 'documents', label: 'Dokumente', icon: FileText, group: 'Wissen', ready: false },
@@ -227,10 +227,11 @@ function Workspace({ initialSession, onLogout }: { initialSession: Session; onLo
         {(error || notice) && <div className={`notice-banner${error ? ' notice-error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice}<button aria-label="Meldung schließen" onClick={() => { setError(''); setNotice(''); }}><X size={15} /></button></div>}
         {section === 'dashboard' && <Dashboard user={user} organization={activeOrganization} onNavigate={navigate} />}
         {section === 'agents' && <AssistantArea key={activeOrganization?.id} canManage={canManage} onSettings={() => navigate('settings')} />}
+        {section === 'marketplace' && <MarketplaceArea key={activeOrganization?.id} />}
         {section === 'team' && <TeamPage organization={activeOrganization} members={members} canManage={canManage} />}
         {section === 'settings' && <SettingsPage user={user} organization={activeOrganization} name={organizationName} setName={setOrganizationName} canManage={canManage} onSave={saveOrganization} saving={savingName} auditEvents={auditEvents} onLogout={() => void logout()} />}
         {section === 'settings' && <OpenAiSettings key={activeOrganization?.id} canManage={canManage} />}
-        {section !== 'dashboard' && section !== 'agents' && section !== 'team' && section !== 'settings' && <UnavailablePage section={section} onBack={() => navigate('dashboard')} />}
+        {section !== 'dashboard' && section !== 'agents' && section !== 'marketplace' && section !== 'team' && section !== 'settings' && <UnavailablePage section={section} onBack={() => navigate('dashboard')} />}
       </main>
       <footer className="workspace-footer"><span><Brand small /> Arbeitsbereich</span><span>Funktionen werden nach Freigabe schrittweise aktiviert.</span></footer>
     </div>
@@ -247,7 +248,7 @@ function Dashboard({ user, organization, onNavigate }: { user: NonNullable<Sessi
     <div className="section-title-row"><div><span className="section-kicker">ÜBERBLICK</span><h2>Ihr Arbeitsbereich</h2></div><span className="live-data-label"><i /> Echte Kontodaten</span></div>
     <section className="workspace-overview-grid">
       <article className="overview-card account-card"><div className="overview-card-heading"><span className="overview-icon icon-lime"><Building2 size={17} /></span><span className="card-label">ORGANISATION</span><button onClick={() => onNavigate('settings')} aria-label="Organisationseinstellungen öffnen"><ArrowRight size={16} /></button></div><strong className="overview-primary">{organization?.name ?? 'Keine Organisation'}</strong><span className="overview-caption">{organization ? `${roleLabel(organization.role)} · Zugriff aktiv` : 'Bitte kontaktieren Sie die Plattformadministration.'}</span><div className="overview-separator" /><div className="overview-meta"><span>Organisationsrolle</span><b>{organization ? roleLabel(organization.role) : '—'}</b></div><div className="overview-meta"><span>Agentenläufe</span><b className="not-recorded">Im Assistenten verfügbar</b></div></article>
-      <article className="overview-card workforce-card"><div className="overview-card-heading"><span className="overview-icon icon-blue"><Bot size={17} /></span><span className="card-label">KI-TEAM</span><span className="status-chip status-planned">ERSTER AGENT AKTIV</span></div><div className="empty-illustration"><div className="empty-orbit orbit-one" /><div className="empty-orbit orbit-two" /><span><Sparkles size={24} /></span><i className="empty-node node-one"><Bot size={13} /></i><i className="empty-node node-two"><Workflow size={12} /></i></div><h3>Arbeitsassistent bereit</h3><p>Der sichere Textassistent ist verfügbar. Hinterlegen Sie zuerst Ihren OpenAI-Zugang in den Einstellungen, um ihn auszuführen.</p><button className="text-action" onClick={() => onNavigate('agents')}>Assistent öffnen <ArrowRight size={15} /></button></article>
+      <article className="overview-card workforce-card"><div className="overview-card-heading"><span className="overview-icon icon-blue"><Bot size={17} /></span><span className="card-label">KI-TEAM</span><span className="status-chip status-planned">AGENT VERFÜGBAR</span></div><div className="empty-illustration"><div className="empty-orbit orbit-one" /><div className="empty-orbit orbit-two" /><span><Sparkles size={24} /></span><i className="empty-node node-one"><Bot size={13} /></i><i className="empty-node node-two"><Workflow size={12} /></i></div><h3>Arbeitsassistent verfügbar</h3><p>Installieren Sie den sicheren Textassistenten in Ihrem Arbeitsbereich. Für echte Antworten benötigen Sie zusätzlich einen OpenAI-Zugang.</p><button className="text-action" onClick={() => onNavigate('marketplace')}>Agentenkatalog öffnen <ArrowRight size={15} /></button></article>
       <article className="overview-card activity-card-main"><div className="overview-card-heading"><span className="overview-icon icon-violet"><Activity size={17} /></span><span className="card-label">AKTIVITÄT</span><span className="status-chip status-empty">KEINE AUSFÜHRUNGEN</span></div><div className="activity-empty"><span className="empty-line line-one" /><span className="empty-line line-two" /><span className="empty-line line-three" /><span className="empty-center"><Activity size={20} /></span></div><h3>Hier erscheint echte Aktivität</h3><p>Dieser Bereich zeigt später nachvollziehbare Ereignisse aus Aufgaben, Freigaben und Agentenläufen.</p><button className="text-action" onClick={() => onNavigate('tasks')}>Aufgabenbereich ansehen <ArrowRight size={15} /></button></article>
     </section>
     <section className="setup-card"><div className="setup-icon"><LockKeyhole size={18} /></div><div><span className="section-kicker">SICHERHEIT VOR AUTOMATISIERUNG</span><h3>Der erste Schritt ist bereit.</h3><p>Kontoverwaltung und Organisationszugriff sind aktiv. Verbindungen, Agenten und Workflows werden erst angeboten, wenn ihre serverseitigen Berechtigungen und Schutzmechanismen vorhanden sind.</p></div><button className="button-secondary" onClick={() => onNavigate('settings')}>Einstellungen öffnen <ArrowRight size={15} /></button></section>
@@ -308,6 +309,7 @@ function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettin
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [agentStatus, setAgentStatus] = useState<'active' | 'paused' | null>(null);
 
   const refresh = useCallback(async () => {
     const [connection, history, catalog] = await Promise.all([
@@ -317,7 +319,9 @@ function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettin
     ]);
     setConfigured(connection.configured);
     setRuns(history.runs);
-    setAgent(catalog.agents.find((item) => item.slug === 'workspace-assistant') ?? null);
+    const assistant = catalog.agents.find((item) => item.slug === 'workspace-assistant') ?? null;
+    setAgent(assistant);
+    setAgentStatus(assistant?.installed_status ?? null);
   }, []);
 
   useEffect(() => { void refresh().catch((cause: unknown) => setError(errorText(cause))); }, [refresh]);
@@ -333,7 +337,40 @@ function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettin
     finally { setBusy(false); }
   }
 
-  return <div className="subpage assistant-page"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM · OPENAI</span><h1>{agent?.name ?? 'Agentenkatalog wird geladen …'}</h1><p>{agent?.description ?? 'Der Agent wird geladen.'}</p></div><span className="model-badge">{agent?.default_model ?? '—'}</span></div>{!configured && <section className="provider-needed"><KeyRound size={19} /><div><strong>OpenAI ist noch nicht verbunden</strong><p>{canManage ? 'Hinterlegen Sie einen Projektschlüssel in den Einstellungen. Ohne Verbindung wird keine Antwort simuliert.' : 'Ein Inhaber oder Administrator muss den Projektschlüssel in den Einstellungen hinterlegen.'}</p></div>{canManage && <button className="button-secondary" onClick={onSettings}>Einstellungen öffnen <ArrowRight size={14} /></button>}</section>}<section className="assistant-compose panel-card"><label htmlFor="assistant-prompt">Wobei kann ich helfen?</label><p>Der Assistent hat keinen Zugriff auf E-Mail, CRM, Dateien oder andere Unternehmenssysteme.</p><form onSubmit={(event) => void submit(event)}><textarea id="assistant-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={6000} placeholder="Beschreiben Sie die Aufgabe …" disabled={!configured || busy || !agent} required /><div className="assistant-compose-footer"><span>{prompt.length} / 6.000 Zeichen · Antwort auf Deutsch</span><button className="button-primary" type="submit" disabled={!configured || busy || !agent || !prompt.trim()}>{busy ? 'Wird ausgeführt …' : 'Anfrage senden'}<Send size={15} /></button></div></form><div className="panel-footnote"><ShieldCheck size={14} /> Anfragen werden an OpenAI gesendet, in Ihrer Organisation gespeichert und lösen keine externen Aktionen aus.</div></section>{error && <div className="form-error" role="alert">{error}</div>}<section className="agent-history"><div className="panel-title"><div><h2>Ihre letzten Anfragen</h2><p>Nur Ihre eigenen Ausführungen in dieser Organisation.</p></div><span className="panel-count">{runs.length}</span></div>{runs.length === 0 ? <div className="panel-card empty-inline">Nach Ihrer ersten Anfrage erscheinen hier Eingabe, Antwort und Status.</div> : runs.map((run) => <article className="panel-card agent-run-card" key={run.id}><div className="agent-run-meta"><span className={`status-chip ${run.status === 'completed' ? 'status-connected' : run.status === 'running' ? 'status-planned' : 'status-empty'}`}>{run.status === 'completed' ? 'ABGESCHLOSSEN' : run.status === 'running' ? 'LÄUFT' : 'FEHLGESCHLAGEN'}</span><time>{new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(run.created_at))}</time></div><h3>{run.prompt}</h3>{run.response && <p className="agent-answer">{run.response}</p>}{run.error_code && <p className="agent-error">Der Aufruf ist fehlgeschlagen ({run.error_code}). Bitte prüfen Sie die Verbindung und versuchen Sie es erneut.</p>}</article>)}</section></div>;
+  async function toggleAgent() {
+    if (!agent) return;
+    setBusy(true); setError('');
+    try {
+      if (agentStatus === null) {
+        await api(`/agents/${agent.slug}/install`, { method: 'POST', body: JSON.stringify({}) });
+        setAgentStatus('active');
+      } else {
+        const status = agentStatus === 'active' ? 'paused' : 'active';
+        await api(`/my-agents/${agent.slug}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+        setAgentStatus(status);
+      }
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="subpage assistant-page"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM · OPENAI</span><h1>{agent?.name ?? 'Agentenkatalog wird geladen …'}</h1><p>{agent?.description ?? 'Der Agent wird geladen.'}</p></div><span className="model-badge">{agent?.default_model ?? '—'}</span></div>{agent && <section className="provider-needed"><Bot size={19} /><div><strong>{agentStatus === 'active' ? 'Agent ist aktiv' : agentStatus === 'paused' ? 'Agent ist pausiert' : 'Agent noch nicht installiert'}</strong><p>{agentStatus === 'active' ? 'Der Agent steht Ihrer Organisation zur Verfügung.' : agentStatus === 'paused' ? 'Während der Pause sind keine neuen Ausführungen möglich.' : 'Installieren Sie diesen Agenten, um ihn in Ihrer Organisation zu verwenden.'}</p></div><button className="button-secondary" onClick={() => void toggleAgent()} disabled={busy}>{agentStatus === null ? 'Installieren' : agentStatus === 'active' ? 'Pausieren' : 'Fortsetzen'} <ArrowRight size={14} /></button></section>}{!configured && <section className="provider-needed"><KeyRound size={19} /><div><strong>OpenAI ist noch nicht verbunden</strong><p>{canManage ? 'Hinterlegen Sie einen Projektschlüssel in den Einstellungen. Ohne Verbindung wird keine Antwort simuliert.' : 'Ein Inhaber oder Administrator muss den Projektschlüssel in den Einstellungen hinterlegen.'}</p></div>{canManage && <button className="button-secondary" onClick={onSettings}>Einstellungen öffnen <ArrowRight size={14} /></button>}</section>}<section className="assistant-compose panel-card"><label htmlFor="assistant-prompt">Wobei kann ich helfen?</label><p>Der Assistent hat keinen Zugriff auf E-Mail, CRM, Dateien oder andere Unternehmenssysteme.</p><form onSubmit={(event) => void submit(event)}><textarea id="assistant-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={6000} placeholder="Beschreiben Sie die Aufgabe …" disabled={!configured || agentStatus !== 'active' || busy || !agent} required /><div className="assistant-compose-footer"><span>{prompt.length} / 6.000 Zeichen · Antwort auf Deutsch</span><button className="button-primary" type="submit" disabled={!configured || agentStatus !== 'active' || busy || !agent || !prompt.trim()}>{busy ? 'Wird ausgeführt …' : 'Anfrage senden'}<Send size={15} /></button></div></form><div className="panel-footnote"><ShieldCheck size={14} /> Anfragen werden an OpenAI gesendet, in Ihrer Organisation gespeichert und lösen keine externen Aktionen aus.</div></section>{error && <div className="form-error" role="alert">{error}</div>}<section className="agent-history"><div className="panel-title"><div><h2>Ihre letzten Anfragen</h2><p>Nur Ihre eigenen Ausführungen in dieser Organisation.</p></div><span className="panel-count">{runs.length}</span></div>{runs.length === 0 ? <div className="panel-card empty-inline">Nach Ihrer ersten Anfrage erscheinen hier Eingabe, Antwort und Status.</div> : runs.map((run) => <article className="panel-card agent-run-card" key={run.id}><div className="agent-run-meta"><span className={`status-chip ${run.status === 'completed' ? 'status-connected' : run.status === 'running' ? 'status-planned' : 'status-empty'}`}>{run.status === 'completed' ? 'ABGESCHLOSSEN' : run.status === 'running' ? 'LÄUFT' : 'FEHLGESCHLAGEN'}</span><time>{new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(run.created_at))}</time></div><h3>{run.prompt}</h3>{run.response && <p className="agent-answer">{run.response}</p>}{run.error_code && <p className="agent-error">Der Aufruf ist fehlgeschlagen ({run.error_code}). Bitte prüfen Sie die Verbindung und versuchen Sie es erneut.</p>}</article>)}</section></div>;
+}
+
+function MarketplaceArea() {
+  const [agents, setAgents] = useState<AgentTemplate[]>([]);
+  const [busySlug, setBusySlug] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const refresh = useCallback(async () => setAgents((await api<{ agents: AgentTemplate[] }>('/agents')).agents), []);
+  useEffect(() => { void refresh().catch((cause: unknown) => setError(errorText(cause))); }, [refresh]);
+
+  async function install(slug: string) {
+    setBusySlug(slug); setError('');
+    try { await api(`/agents/${slug}/install`, { method: 'POST', body: JSON.stringify({}) }); await refresh(); }
+    catch (cause) { setError(errorText(cause)); }
+    finally { setBusySlug(null); }
+  }
+
+  return <div className="subpage"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM</span><h1>Agentenkatalog</h1><p>Verfügbare Agenten für Ihren geschützten Arbeitsbereich.</p></div><span className="panel-count">{agents.length} verfügbar</span></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="agent-catalog-grid">{agents.map((agent) => <article className="panel-card agent-catalog-card" key={agent.slug}><span className="overview-icon icon-lime"><Bot size={18} /></span><span className="section-kicker">{agent.category.toUpperCase()}</span><h2>{agent.name}</h2><p>{agent.description}</p><div className="agent-catalog-meta"><span>Version {agent.version}.0</span><span>{agent.default_model}</span></div>{agent.installed_status ? <button className="button-secondary" onClick={() => window.location.assign('/app/agents')}>{agent.installed_status === 'active' ? 'In Meine Agenten öffnen' : 'Installiert · pausiert'} <ArrowRight size={14} /></button> : <button className="button-primary" onClick={() => void install(agent.slug)} disabled={busySlug !== null}>{busySlug === agent.slug ? 'Wird installiert …' : 'Agent installieren'} <ArrowRight size={14} /></button>}</article>)}</div>{agents.length === 0 && !error && <div className="panel-card empty-inline">Der Katalog wird geladen.</div>}</div>;
 }
 
 function UnavailablePage({ section, onBack }: { section: Section; onBack: () => void }) {
@@ -365,6 +402,9 @@ function auditLabel(action: string): string {
     'organization.updated': 'Organisation geändert',
     'integration.openai.connected': 'OpenAI verbunden',
     'integration.openai.removed': 'OpenAI-Zugang entfernt',
+    'agent.installed': 'Agent installiert',
+    'agent.paused': 'Agent pausiert',
+    'agent.resumed': 'Agent fortgesetzt',
     'agent.run.completed': 'Agentenausführung abgeschlossen',
     'agent.run.failed': 'Agentenausführung fehlgeschlagen',
   } as Record<string, string>)[action] ?? 'Sicherheitsereignis';

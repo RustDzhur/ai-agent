@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assistantRunSchema, loginSchema, openAiCredentialSchema, registerSchema } from './schemas.js';
+import { assistantRunSchema, loginSchema, openAiCredentialSchema, registerSchema, tenantAgentStatusSchema } from './schemas.js';
 
 describe('account input validation', () => {
   it('normalizes email and accepts a valid registration', () => {
@@ -37,5 +37,13 @@ describe('AI provider inputs', () => {
     expect(openAiCredentialSchema.safeParse({ apiKey: 'not-a-key' }).success).toBe(false);
     expect(openAiCredentialSchema.safeParse({ apiKey: 'sk-' + 'A'.repeat(25), model: 'unexpected-model' }).success).toBe(false);
     expect(assistantRunSchema.safeParse({ prompt: 'x'.repeat(6001) }).success).toBe(false);
+  });
+});
+
+describe('tenant agent controls', () => {
+  it('accepts only an explicit active or paused status', () => {
+    expect(tenantAgentStatusSchema.parse({ status: 'paused' })).toEqual({ status: 'paused' });
+    expect(tenantAgentStatusSchema.safeParse({ status: 'deleted' }).success).toBe(false);
+    expect(tenantAgentStatusSchema.safeParse({ status: 'active', organizationId: 'other-tenant' }).success).toBe(false);
   });
 });

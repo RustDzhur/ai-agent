@@ -14,6 +14,7 @@ import {
   openAiCredentialSchema,
   registerSchema,
   selectOrganizationSchema,
+  tenantAgentStatusSchema,
   updateOrganizationSchema,
 } from './auth/schemas.js';
 import { decryptSecret, encryptSecret, type EncryptedSecret } from './integrations/secret-box.js';
@@ -329,6 +330,11 @@ app.post('/api/v1/auth/register', {
         `INSERT INTO organization_memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')`,
         [organizationId, userId],
       );
+      await client.query(
+        `INSERT INTO tenant_agents (id, organization_id, template_slug, installed_by)
+         VALUES ($1, $2, 'workspace-assistant', $3)`,
+        [randomUUID(), organizationId, userId],
+      );
       const sessionToken = await createSession(client, userId, organizationId);
       await client.query(
         `INSERT INTO audit_logs (id, organization_id, user_id, request_id, action, metadata)
@@ -413,6 +419,11 @@ app.post('/api/v1/organizations', {
     await client.query(
       `INSERT INTO organization_memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')`,
       [organizationId, session.userId],
+    );
+    await client.query(
+      `INSERT INTO tenant_agents (id, organization_id, template_slug, installed_by)
+       VALUES ($1, $2, 'workspace-assistant', $3)`,
+      [randomUUID(), organizationId, session.userId],
     );
     await client.query('UPDATE sessions SET active_organization_id = $1 WHERE id = $2', [organizationId, session.id]);
     await writeAudit(client, request, { ...session, activeOrganizationId: organizationId }, 'organization.created');
@@ -614,12 +625,82 @@ app.get('/api/v1/agents', async (request, reply) => {
   return withTenant(session, async (client) => {
     const result = await client.query<{
       slug: string; version: number; name: string; category: string; description: string;
-      default_model: string; required_provider: string;
+      default_model: string; required_provider: string; installed_status: 'active' | 'paused' | null;
     }>(
-      `SELECT slug, version, name, category, description, default_model, required_provider
-       FROM agent_templates WHERE status = 'active' ORDER BY name`,
+      `SELECT template.slug, template.version, template.name, template.category, template.description,
+              template.default_model, template.required_provider, tenant_agent.status AS installed_status
+       FROM agent_templates template
+       LEFT JOIN tenant_agents tenant_agent
+         ON tenant_agent.template_slug = template.slug AND tenant_agent.organization_id = $1
+       WHERE template.status = 'active' ORDER BY template.name`,
+      [session.activeOrganizationId],
     );
     return { agents: result.rows };
+  });
+});
+
+app.get('/api/v1/my-agents', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client) => {
+    const result = await client.query(
+      `SELECT template.slug, template.version, template.name, template.category, template.description,
+              template.default_model, tenant_agent.status, tenant_agent.installed_version, tenant_agent.created_at
+       FROM tenant_agents tenant_agent
+       JOIN agent_templates template ON template.slug = tenant_agent.template_slug AND template.version = tenant_agent.installed_version
+       WHERE tenant_agent.organization_id = $1 ORDER BY tenant_agent.created_at DESC`,
+      [session.activeOrganizationId],
+    );
+    return { agents: result.rows };
+  });
+});
+
+app.post('/api/v1/agents/:slug/install', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const slug = (request.params as { slug?: string }).slug;
+  if (!slug || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return reply.code(400).send({ error: 'invalid_input' });
+  return withTenant(session, async (client, role) => {
+    if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const template = await client.query<{ version: number }>(
+      `SELECT version FROM agent_templates WHERE slug = $1 AND status = 'active' ORDER BY version DESC LIMIT 1`,
+      [slug],
+    );
+    const current = template.rows[0];
+    if (!current) throw new HttpError(404, 'agent_not_available');
+    const installed = await client.query(
+      `INSERT INTO tenant_agents (id, organization_id, template_slug, installed_version, installed_by)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (organization_id, template_slug) DO NOTHING
+       RETURNING id`,
+      [randomUUID(), session.activeOrganizationId, slug, current.version, session.userId],
+    );
+    if (installed.rowCount) await writeAudit(client, request, session, 'agent.installed', { agent: slug, version: current.version });
+    const currentStatus = await client.query<{ status: string }>(
+      'SELECT status FROM tenant_agents WHERE organization_id = $1 AND template_slug = $2',
+      [session.activeOrganizationId, slug],
+    );
+    return reply.code(installed.rowCount ? 201 : 200).send({ slug, installed: true, status: currentStatus.rows[0]?.status });
+  });
+});
+
+app.patch('/api/v1/my-agents/:slug', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const slug = (request.params as { slug?: string }).slug;
+  const parsed = tenantAgentStatusSchema.safeParse(request.body);
+  if (!slug || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || !parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  return withTenant(session, async (client, role) => {
+    if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const result = await client.query<{ status: 'active' | 'paused' }>(
+      `UPDATE tenant_agents SET status = $1, updated_at = now()
+       WHERE organization_id = $2 AND template_slug = $3 RETURNING status`,
+      [parsed.data.status, session.activeOrganizationId, slug],
+    );
+    const current = result.rows[0];
+    if (!current) throw new HttpError(404, 'agent_not_installed');
+    await writeAudit(client, request, session, `agent.${parsed.data.status === 'active' ? 'resumed' : 'paused'}`, { agent: slug });
+    return { slug, status: current.status };
   });
 });
 
@@ -635,6 +716,12 @@ app.post('/api/v1/agents/assistant/run', {
   const runId = randomUUID();
   const { key, template } = await withTenant(session, async (client, role) => {
     if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const installation = await client.query<{ status: string }>(
+      'SELECT status FROM tenant_agents WHERE organization_id = $1 AND template_slug = $2',
+      [session.activeOrganizationId, 'workspace-assistant'],
+    );
+    if (!installation.rows[0]) throw new HttpError(409, 'agent_not_installed');
+    if (installation.rows[0].status !== 'active') throw new HttpError(409, 'agent_paused');
     const connection = await client.query<EncryptedSecret>(
       `SELECT secret_ciphertext AS ciphertext, secret_iv AS iv, secret_tag AS tag
        FROM provider_connections WHERE organization_id = $1 AND provider = 'openai'`,
