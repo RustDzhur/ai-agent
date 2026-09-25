@@ -61,6 +61,10 @@ export const errorText = (error: unknown): string => {
     case 'agent_not_available': return 'Dieser Agent ist aktuell nicht verfügbar.';
     case 'agent_not_installed': return 'Dieser Agent ist in Ihrer Organisation nicht installiert.';
     case 'agent_paused': return 'Dieser Agent ist pausiert. Setzen Sie ihn vor dem Start fort.';
+    case 'invalid_workflow':
+    case 'workflow_configuration_invalid': return 'Bitte prüfen Sie die Reihenfolge und Angaben Ihrer Automatisierung.';
+    case 'workflow_not_found': return 'Diese Automatisierung wurde nicht gefunden.';
+    case 'workflow_triggers_not_configured': return 'Automatische Auslöser sind noch nicht eingerichtet. Der Workflow bleibt ein Entwurf.';
     case 'openai_key_invalid': return 'Der OpenAI-Schlüssel wurde abgelehnt. Bitte prüfen Sie ihn und versuchen Sie es erneut.';
     case 'openai_key_insufficient_permissions': return 'Der OpenAI-Schlüssel hat nicht die nötigen Berechtigungen.';
     case 'openai_model_unavailable': return 'Der OpenAI-Schlüssel hat keinen Zugriff auf GPT-6 Luna.';

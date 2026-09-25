@@ -16,6 +16,8 @@ import {
   selectOrganizationSchema,
   tenantAgentStatusSchema,
   updateOrganizationSchema,
+  workflowSchema,
+  workflowStatusSchema,
 } from './auth/schemas.js';
 import { decryptSecret, encryptSecret, type EncryptedSecret } from './integrations/secret-box.js';
 
@@ -619,6 +621,22 @@ app.get('/api/v1/agents/assistant/runs', async (request, reply) => {
   });
 });
 
+app.get('/api/v1/agents/:slug/runs', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const slug = (request.params as { slug?: string }).slug;
+  if (!slug || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return reply.code(400).send({ error: 'invalid_input' });
+  return withTenant(session, async (client) => {
+    const result = await client.query(
+      `SELECT id, status, prompt, response, error_code, model, input_tokens, output_tokens, created_at, completed_at
+       FROM agent_runs WHERE organization_id = $1 AND requested_by = $2 AND agent_slug = $3
+       ORDER BY created_at DESC LIMIT 30`,
+      [session.activeOrganizationId, session.userId, slug],
+    );
+    return { runs: result.rows };
+  });
+});
+
 app.get('/api/v1/agents', async (request, reply) => {
   const session = await requireSession(request, reply);
   if (!session) return;
@@ -704,11 +722,151 @@ app.patch('/api/v1/my-agents/:slug', async (request, reply) => {
   });
 });
 
-app.post('/api/v1/agents/assistant/run', {
-  config: { rateLimit: { max: 8, timeWindow: '1 minute' } },
-}, async (request, reply) => {
+app.get('/api/v1/workflows', async (request, reply) => {
   const session = await requireSession(request, reply);
   if (!session) return;
+  return withTenant(session, async (client) => {
+    const result = await client.query(
+      `SELECT workflow.id, workflow.name, workflow.description, workflow.status, workflow.definition,
+              workflow.created_at, workflow.updated_at,
+              (SELECT count(*)::int FROM workflow_runs WHERE workflow_id = workflow.id) AS run_count
+       FROM tenant_workflows workflow WHERE workflow.organization_id = $1
+       ORDER BY workflow.updated_at DESC`,
+      [session.activeOrganizationId],
+    );
+    return { workflows: result.rows };
+  });
+});
+
+app.post('/api/v1/workflows', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const parsed = workflowSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_workflow' });
+  return withTenant(session, async (client, role) => {
+    if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const id = randomUUID();
+    const result = await client.query(
+      `INSERT INTO tenant_workflows (id, organization_id, name, description, definition, created_by)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+       RETURNING id, name, description, status, definition, created_at, updated_at`,
+      [id, session.activeOrganizationId, parsed.data.name, parsed.data.description, JSON.stringify({ nodes: parsed.data.nodes }), session.userId],
+    );
+    await writeAudit(client, request, session, 'workflow.created', { workflow_id: id, name: parsed.data.name });
+    return reply.code(201).send({ workflow: result.rows[0] });
+  });
+});
+
+app.put('/api/v1/workflows/:id', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const id = (request.params as { id?: string }).id;
+  const parsed = workflowSchema.safeParse(request.body);
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id) || !parsed.success) return reply.code(400).send({ error: 'invalid_workflow' });
+  return withTenant(session, async (client, role) => {
+    if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const result = await client.query(
+      `UPDATE tenant_workflows SET name = $1, description = $2, definition = $3::jsonb, updated_at = now()
+       WHERE id = $4 AND organization_id = $5
+       RETURNING id, name, description, status, definition, created_at, updated_at`,
+      [parsed.data.name, parsed.data.description, JSON.stringify({ nodes: parsed.data.nodes }), id, session.activeOrganizationId],
+    );
+    const workflow = result.rows[0];
+    if (!workflow) throw new HttpError(404, 'workflow_not_found');
+    await writeAudit(client, request, session, 'workflow.updated', { workflow_id: id });
+    return { workflow };
+  });
+});
+
+app.patch('/api/v1/workflows/:id/status', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const id = (request.params as { id?: string }).id;
+  const parsed = workflowStatusSchema.safeParse(request.body);
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id) || !parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  if (parsed.data.status === 'active') throw new HttpError(409, 'workflow_triggers_not_configured');
+  return withTenant(session, async (client, role) => {
+    if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const result = await client.query<{ id: string; status: string }>(
+      `UPDATE tenant_workflows SET status = $1, updated_at = now()
+       WHERE id = $2 AND organization_id = $3 RETURNING id, status`,
+      [parsed.data.status, id, session.activeOrganizationId],
+    );
+    const workflow = result.rows[0];
+    if (!workflow) throw new HttpError(404, 'workflow_not_found');
+    await writeAudit(client, request, session, 'workflow.status_changed', { workflow_id: id, status: workflow.status });
+    return { workflow };
+  });
+});
+
+app.get('/api/v1/workflows/:id/runs', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const id = (request.params as { id?: string }).id;
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return reply.code(400).send({ error: 'invalid_input' });
+  return withTenant(session, async (client) => {
+    const result = await client.query(
+      `SELECT id, status, trace, created_at FROM workflow_runs
+       WHERE organization_id = $1 AND workflow_id = $2 ORDER BY created_at DESC LIMIT 20`,
+      [session.activeOrganizationId, id],
+    );
+    return { runs: result.rows };
+  });
+});
+
+app.post('/api/v1/workflows/:id/run', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const id = (request.params as { id?: string }).id;
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return reply.code(400).send({ error: 'invalid_input' });
+  return withTenant(session, async (client, role) => {
+    if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const result = await client.query<{ name: string; definition: { nodes?: unknown } }>(
+      'SELECT name, definition FROM tenant_workflows WHERE id = $1 AND organization_id = $2',
+      [id, session.activeOrganizationId],
+    );
+    const workflow = result.rows[0];
+    if (!workflow) throw new HttpError(404, 'workflow_not_found');
+    const parsed = workflowSchema.safeParse({ name: workflow.name, description: '', nodes: workflow.definition.nodes });
+    if (!parsed.success) throw new HttpError(409, 'workflow_configuration_invalid');
+    const hasProvider = await client.query(
+      "SELECT 1 FROM provider_connections WHERE organization_id = $1 AND provider = 'openai'",
+      [session.activeOrganizationId],
+    );
+    const installedAgents = new Map<string, 'active' | 'paused'>();
+    const slugs = [...new Set(parsed.data.nodes.filter((node) => node.type === 'agent').map((node) => node.type === 'agent' ? node.agentSlug : ''))];
+    if (slugs.length) {
+      const installations = await client.query<{ template_slug: string; status: 'active' | 'paused' }>(
+        'SELECT template_slug, status FROM tenant_agents WHERE organization_id = $1 AND template_slug = ANY($2::text[])',
+        [session.activeOrganizationId, slugs],
+      );
+      for (const installation of installations.rows) installedAgents.set(installation.template_slug, installation.status);
+    }
+    const trace = parsed.data.nodes.map((node) => {
+      if (node.type === 'trigger') return { id: node.id, label: node.label, status: 'ready', detail: 'Manueller Auslöser erkannt.' };
+      if (node.type === 'approval') return { id: node.id, label: node.label, status: 'ready', detail: 'Freigabeschritt vorgesehen; in diesem Probelauf wird keine Freigabe angefordert.' };
+      const installed = installedAgents.get(node.agentSlug);
+      if (!installed) return { id: node.id, label: node.label, status: 'blocked', detail: 'Agent ist in dieser Organisation nicht installiert.' };
+      if (installed === 'paused') return { id: node.id, label: node.label, status: 'blocked', detail: 'Agent ist pausiert.' };
+      if (!hasProvider.rowCount) return { id: node.id, label: node.label, status: 'blocked', detail: 'OpenAI-Verbindung fehlt.' };
+      return { id: node.id, label: node.label, status: 'ready', detail: 'Agent installiert, OpenAI-Zugang hinterlegt; dessen Gültigkeit wird im Probelauf nicht extern geprüft.' };
+    });
+    const status = trace.some((step) => step.status === 'blocked') ? 'blocked' : 'validated';
+    const runId = randomUUID();
+    await client.query(
+      `INSERT INTO workflow_runs (id, organization_id, workflow_id, requested_by, status, trace)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+      [runId, session.activeOrganizationId, id, session.userId, status, JSON.stringify(trace)],
+    );
+    await writeAudit(client, request, session, 'workflow.dry_run', { workflow_id: id, run_id: runId, status });
+    return { run: { id: runId, status, trace, message: 'Probelauf: Konfiguration geprüft. Es wurden keine KI-Anfragen und keine externen Aktionen ausgeführt.' } };
+  });
+});
+
+const runAgent = async (request: FastifyRequest, reply: FastifyReply, agentSlug: string) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agentSlug)) return reply.code(400).send({ error: 'invalid_input' });
   const parsed = assistantRunSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
   if (!session.activeOrganizationId) throw new HttpError(403, 'organization_access_required');
@@ -718,7 +876,7 @@ app.post('/api/v1/agents/assistant/run', {
     if (role === 'viewer') throw new HttpError(403, 'permission_denied');
     const installation = await client.query<{ status: string }>(
       'SELECT status FROM tenant_agents WHERE organization_id = $1 AND template_slug = $2',
-      [session.activeOrganizationId, 'workspace-assistant'],
+      [session.activeOrganizationId, agentSlug],
     );
     if (!installation.rows[0]) throw new HttpError(409, 'agent_not_installed');
     if (installation.rows[0].status !== 'active') throw new HttpError(409, 'agent_paused');
@@ -731,14 +889,15 @@ app.post('/api/v1/agents/assistant/run', {
     if (!storedSecret) throw new HttpError(409, 'provider_not_configured');
     const templateResult = await client.query<{ instructions: string; default_model: string; max_output_tokens: number }>(
       `SELECT instructions, default_model, max_output_tokens FROM agent_templates
-       WHERE slug = 'workspace-assistant' AND status = 'active' ORDER BY version DESC LIMIT 1`,
+       WHERE slug = $1 AND status = 'active' ORDER BY version DESC LIMIT 1`,
+      [agentSlug],
     );
     const activeTemplate = templateResult.rows[0];
     if (!activeTemplate) throw new HttpError(404, 'agent_not_available');
     await client.query(
       `INSERT INTO agent_runs (id, organization_id, requested_by, agent_slug, status, prompt)
-       VALUES ($1, $2, $3, 'workspace-assistant', 'running', $4)`,
-      [runId, session.activeOrganizationId, session.userId, parsed.data.prompt],
+       VALUES ($1, $2, $3, $4, 'running', $5)`,
+      [runId, session.activeOrganizationId, session.userId, agentSlug, parsed.data.prompt],
     );
     return { key: decryptSecret(storedSecret), template: activeTemplate };
   });
@@ -782,9 +941,9 @@ app.post('/api/v1/agents/assistant/run', {
          input_tokens = $3, output_tokens = $4, completed_at = now() WHERE id = $5 AND organization_id = $6`,
         [answer.slice(0, 20_000), body.id ?? null, body.usage?.input_tokens ?? null, body.usage?.output_tokens ?? null, runId, session.activeOrganizationId],
       );
-      await writeAudit(client, request, session, 'agent.run.completed', { agent: 'workspace-assistant', run_id: runId });
+      await writeAudit(client, request, session, 'agent.run.completed', { agent: agentSlug, run_id: runId });
     });
-    return { run: { id: runId, status: 'completed', response: answer, model: template.default_model } };
+    return { run: { id: runId, status: 'completed', response: answer, model: template.default_model, agent: agentSlug } };
   } catch (error) {
     const safeCode = error instanceof HttpError ? error.code : 'provider_unavailable';
     await inTransaction(async (client) => {
@@ -793,11 +952,19 @@ app.post('/api/v1/agents/assistant/run', {
         `UPDATE agent_runs SET status = 'failed', error_code = $1, completed_at = now() WHERE id = $2 AND organization_id = $3`,
         [safeCode, runId, session.activeOrganizationId],
       );
-      await writeAudit(client, request, session, 'agent.run.failed', { agent: 'workspace-assistant', run_id: runId, error: safeCode });
+      await writeAudit(client, request, session, 'agent.run.failed', { agent: agentSlug, run_id: runId, error: safeCode });
     });
     throw error instanceof HttpError ? error : new HttpError(502, 'provider_unavailable');
   }
-});
+};
+
+app.post('/api/v1/agents/:slug/run', {
+  config: { rateLimit: { max: 8, timeWindow: '1 minute' } },
+}, async (request, reply) => runAgent(request, reply, (request.params as { slug?: string }).slug ?? ''));
+
+app.post('/api/v1/agents/assistant/run', {
+  config: { rateLimit: { max: 8, timeWindow: '1 minute' } },
+}, async (request, reply) => runAgent(request, reply, 'workspace-assistant'));
 
 async function start(): Promise<void> {
   await redis.connect();

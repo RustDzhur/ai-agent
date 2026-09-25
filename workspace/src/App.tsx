@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  Activity, ArrowLeft, ArrowRight, Bot, Building2, Check, ChevronDown,
+  Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Building2, Check, ChevronDown,
   CreditCard, FileText, Files, Gauge, GitBranch, Layers3, LockKeyhole, LogOut, Menu,
-  MoreHorizontal, Network, Send, Settings2, ShieldCheck, Sparkles, Trash2, KeyRound,
+  MoreHorizontal, Network, Play, Plus, Save, Search, Send, Settings2, ShieldCheck, Sparkles, Trash2, KeyRound,
   UsersRound, Workflow, X,
 } from 'lucide-react';
 import { api, errorText, updateCsrfToken, type Organization, type Session } from './api.ts';
@@ -11,12 +11,16 @@ type Section = 'dashboard' | 'agents' | 'marketplace' | 'automations' | 'tasks' 
 type Member = { user_id: string; full_name: string; email: string; role: Organization['role']; created_at: string };
 type AgentRun = { id: string; status: 'running' | 'completed' | 'failed'; prompt: string; response: string | null; error_code: string | null; model: string; created_at: string };
 type AgentTemplate = { slug: string; version: number; name: string; category: string; description: string; default_model: string; required_provider: string; installed_status?: 'active' | 'paused' | null };
+type MyAgent = AgentTemplate & { status: 'active' | 'paused'; installed_version: number; created_at: string };
+type WorkflowNode = { id: string; type: 'trigger' | 'agent' | 'approval'; label: string; agentSlug?: string };
+type Workflow = { id: string; name: string; description: string; status: 'draft' | 'active' | 'paused'; definition: { nodes: WorkflowNode[] }; run_count: number; updated_at: string };
+type WorkflowTrace = { id: string; label: string; status: 'ready' | 'blocked'; detail: string };
 
 const sections: { id: Section; label: string; icon: typeof Gauge; group: string; ready: boolean }[] = [
   { id: 'dashboard', label: 'Übersicht', icon: Gauge, group: 'Arbeitsbereich', ready: true },
   { id: 'agents', label: 'Meine Agenten', icon: Bot, group: 'KI-Team', ready: true },
   { id: 'marketplace', label: 'Agentenkatalog', icon: Layers3, group: 'KI-Team', ready: true },
-  { id: 'automations', label: 'Automatisierungen', icon: Workflow, group: 'Abläufe', ready: false },
+  { id: 'automations', label: 'Automatisierungen', icon: Workflow, group: 'Abläufe', ready: true },
   { id: 'tasks', label: 'Aufgaben', icon: GitBranch, group: 'Abläufe', ready: false },
   { id: 'documents', label: 'Dokumente', icon: FileText, group: 'Wissen', ready: false },
   { id: 'knowledge', label: 'Unternehmenswissen', icon: Files, group: 'Wissen', ready: false },
@@ -100,6 +104,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: Session) =
 function Workspace({ initialSession, onLogout }: { initialSession: Session; onLogout: (session: Session) => void }) {
   const [session, setSession] = useState(initialSession);
   const [section, setSection] = useState(sectionFromPath);
+  const [routePath, setRoutePath] = useState(window.location.pathname);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [orgMenu, setOrgMenu] = useState(false);
@@ -128,7 +133,7 @@ function Workspace({ initialSession, onLogout }: { initialSession: Session; onLo
   }, [onLogout]);
 
   useEffect(() => {
-    const handlePopState = () => setSection(sectionFromPath());
+    const handlePopState = () => { setRoutePath(window.location.pathname); setSection(sectionFromPath()); };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
@@ -146,6 +151,7 @@ function Workspace({ initialSession, onLogout }: { initialSession: Session; onLo
   function navigate(next: Section) {
     const target = next === 'dashboard' ? '/app/' : `/app/${next}`;
     window.history.pushState({}, '', target);
+    setRoutePath(target);
     setSection(next);
     setMobileMenu(false);
     setError('');
@@ -226,12 +232,15 @@ function Workspace({ initialSession, onLogout }: { initialSession: Session; onLo
       <main className="content-area">
         {(error || notice) && <div className={`notice-banner${error ? ' notice-error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice}<button aria-label="Meldung schließen" onClick={() => { setError(''); setNotice(''); }}><X size={15} /></button></div>}
         {section === 'dashboard' && <Dashboard user={user} organization={activeOrganization} onNavigate={navigate} />}
-        {section === 'agents' && <AssistantArea key={activeOrganization?.id} canManage={canManage} onSettings={() => navigate('settings')} />}
+        {section === 'agents' && (routePath.split('/').filter(Boolean).length > 2
+          ? <AssistantArea key={`${activeOrganization?.id}:${routePath}`} routePath={routePath} canManage={canManage} onSettings={() => navigate('settings')} />
+          : <MyAgentsArea key={activeOrganization?.id} />)}
         {section === 'marketplace' && <MarketplaceArea key={activeOrganization?.id} />}
+        {section === 'automations' && <WorkflowArea key={activeOrganization?.id} />}
         {section === 'team' && <TeamPage organization={activeOrganization} members={members} canManage={canManage} />}
         {section === 'settings' && <SettingsPage user={user} organization={activeOrganization} name={organizationName} setName={setOrganizationName} canManage={canManage} onSave={saveOrganization} saving={savingName} auditEvents={auditEvents} onLogout={() => void logout()} />}
         {section === 'settings' && <OpenAiSettings key={activeOrganization?.id} canManage={canManage} />}
-        {section !== 'dashboard' && section !== 'agents' && section !== 'marketplace' && section !== 'team' && section !== 'settings' && <UnavailablePage section={section} onBack={() => navigate('dashboard')} />}
+        {section !== 'dashboard' && section !== 'agents' && section !== 'marketplace' && section !== 'automations' && section !== 'team' && section !== 'settings' && <UnavailablePage section={section} onBack={() => navigate('dashboard')} />}
       </main>
       <footer className="workspace-footer"><span><Brand small /> Arbeitsbereich</span><span>Funktionen werden nach Freigabe schrittweise aktiviert.</span></footer>
     </div>
@@ -302,7 +311,8 @@ function OpenAiSettings({ canManage }: { canManage: boolean }) {
   return <section className="panel-card provider-panel"><div className="panel-title"><div><h2>OpenAI-Verbindung</h2><p>Organisationsschlüssel für den KI-Assistenten.</p></div><span className={`status-chip ${configured ? 'status-connected' : 'status-planned'}`}>{configured ? 'VERBUNDEN' : 'NICHT VERBUNDEN'}</span></div>{configured && <div className="provider-current"><span><KeyRound size={15} /> Gespeicherter Schlüssel</span><strong>{keyHint}</strong></div>}{canManage ? <form className="provider-form" onSubmit={(event) => void save(event)}><label>{configured ? 'Schlüssel ersetzen' : 'OpenAI-Projektschlüssel'}<input type="password" autoComplete="new-password" spellCheck={false} minLength={20} maxLength={512} pattern="sk-[A-Za-z0-9_-]+" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-proj-…" required /></label><button className="button-primary" type="submit" disabled={busy || !apiKey.trim()}>{busy ? 'Wird geprüft …' : 'Sicher verbinden'}<ArrowRight size={15} /></button></form> : <p className="panel-footnote">Nur Inhaber und Administratoren können den KI-Schlüssel ändern.</p>}{configured && canManage && <button className="provider-remove" onClick={() => void remove()} disabled={busy}><Trash2 size={14} /> Verbindung entfernen</button>}<p className="panel-footnote"><ShieldCheck size={14} /> Der Schlüssel wird serverseitig verschlüsselt und nie wieder im Browser angezeigt. Prompts und Antworten werden in Ihrer Organisation gespeichert und an OpenAI gesendet.</p>{message && <div className="provider-message" role="status">{message}</div>}</section>;
 }
 
-function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettings: () => void }) {
+function AssistantArea({ routePath, canManage, onSettings }: { routePath: string; canManage: boolean; onSettings: () => void }) {
+  const agentSlug = routePath.split('/').filter(Boolean)[2] ?? 'workspace-assistant';
   const [configured, setConfigured] = useState(false);
   const [agent, setAgent] = useState<AgentTemplate | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -314,15 +324,15 @@ function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettin
   const refresh = useCallback(async () => {
     const [connection, history, catalog] = await Promise.all([
       api<{ configured: boolean }>('/integrations/openai'),
-      api<{ runs: AgentRun[] }>('/agents/assistant/runs'),
+      api<{ runs: AgentRun[] }>(`/agents/${agentSlug}/runs`),
       api<{ agents: AgentTemplate[] }>('/agents'),
     ]);
     setConfigured(connection.configured);
     setRuns(history.runs);
-    const assistant = catalog.agents.find((item) => item.slug === 'workspace-assistant') ?? null;
+    const assistant = catalog.agents.find((item) => item.slug === agentSlug) ?? null;
     setAgent(assistant);
     setAgentStatus(assistant?.installed_status ?? null);
-  }, []);
+  }, [agentSlug]);
 
   useEffect(() => { void refresh().catch((cause: unknown) => setError(errorText(cause))); }, [refresh]);
 
@@ -330,7 +340,7 @@ function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettin
     event.preventDefault(); setBusy(true); setError('');
     const submittedPrompt = prompt;
     try {
-      const result = await api<{ run: { id: string; status: 'completed'; response: string; model: string } }>('/agents/assistant/run', { method: 'POST', body: JSON.stringify({ prompt: submittedPrompt }) });
+      const result = await api<{ run: { id: string; status: 'completed'; response: string; model: string } }>(`/agents/${agentSlug}/run`, { method: 'POST', body: JSON.stringify({ prompt: submittedPrompt }) });
       setRuns((current) => [{ id: result.run.id, status: 'completed', prompt: submittedPrompt, response: result.run.response, error_code: null, model: result.run.model, created_at: new Date().toISOString() }, ...current]);
       setPrompt('');
     } catch (cause) { setError(errorText(cause)); }
@@ -342,11 +352,11 @@ function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettin
     setBusy(true); setError('');
     try {
       if (agentStatus === null) {
-        await api(`/agents/${agent.slug}/install`, { method: 'POST', body: JSON.stringify({}) });
+        await api(`/agents/${agentSlug}/install`, { method: 'POST', body: JSON.stringify({}) });
         setAgentStatus('active');
       } else {
         const status = agentStatus === 'active' ? 'paused' : 'active';
-        await api(`/my-agents/${agent.slug}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+        await api(`/my-agents/${agentSlug}`, { method: 'PATCH', body: JSON.stringify({ status }) });
         setAgentStatus(status);
       }
     } catch (cause) { setError(errorText(cause)); }
@@ -356,12 +366,41 @@ function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettin
   return <div className="subpage assistant-page"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM · OPENAI</span><h1>{agent?.name ?? 'Agentenkatalog wird geladen …'}</h1><p>{agent?.description ?? 'Der Agent wird geladen.'}</p></div><span className="model-badge">{agent?.default_model ?? '—'}</span></div>{agent && <section className="provider-needed"><Bot size={19} /><div><strong>{agentStatus === 'active' ? 'Agent ist aktiv' : agentStatus === 'paused' ? 'Agent ist pausiert' : 'Agent noch nicht installiert'}</strong><p>{agentStatus === 'active' ? 'Der Agent steht Ihrer Organisation zur Verfügung.' : agentStatus === 'paused' ? 'Während der Pause sind keine neuen Ausführungen möglich.' : 'Installieren Sie diesen Agenten, um ihn in Ihrer Organisation zu verwenden.'}</p></div><button className="button-secondary" onClick={() => void toggleAgent()} disabled={busy}>{agentStatus === null ? 'Installieren' : agentStatus === 'active' ? 'Pausieren' : 'Fortsetzen'} <ArrowRight size={14} /></button></section>}{!configured && <section className="provider-needed"><KeyRound size={19} /><div><strong>OpenAI ist noch nicht verbunden</strong><p>{canManage ? 'Hinterlegen Sie einen Projektschlüssel in den Einstellungen. Ohne Verbindung wird keine Antwort simuliert.' : 'Ein Inhaber oder Administrator muss den Projektschlüssel in den Einstellungen hinterlegen.'}</p></div>{canManage && <button className="button-secondary" onClick={onSettings}>Einstellungen öffnen <ArrowRight size={14} /></button>}</section>}<section className="assistant-compose panel-card"><label htmlFor="assistant-prompt">Wobei kann ich helfen?</label><p>Der Assistent hat keinen Zugriff auf E-Mail, CRM, Dateien oder andere Unternehmenssysteme.</p><form onSubmit={(event) => void submit(event)}><textarea id="assistant-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={6000} placeholder="Beschreiben Sie die Aufgabe …" disabled={!configured || agentStatus !== 'active' || busy || !agent} required /><div className="assistant-compose-footer"><span>{prompt.length} / 6.000 Zeichen · Antwort auf Deutsch</span><button className="button-primary" type="submit" disabled={!configured || agentStatus !== 'active' || busy || !agent || !prompt.trim()}>{busy ? 'Wird ausgeführt …' : 'Anfrage senden'}<Send size={15} /></button></div></form><div className="panel-footnote"><ShieldCheck size={14} /> Anfragen werden an OpenAI gesendet, in Ihrer Organisation gespeichert und lösen keine externen Aktionen aus.</div></section>{error && <div className="form-error" role="alert">{error}</div>}<section className="agent-history"><div className="panel-title"><div><h2>Ihre letzten Anfragen</h2><p>Nur Ihre eigenen Ausführungen in dieser Organisation.</p></div><span className="panel-count">{runs.length}</span></div>{runs.length === 0 ? <div className="panel-card empty-inline">Nach Ihrer ersten Anfrage erscheinen hier Eingabe, Antwort und Status.</div> : runs.map((run) => <article className="panel-card agent-run-card" key={run.id}><div className="agent-run-meta"><span className={`status-chip ${run.status === 'completed' ? 'status-connected' : run.status === 'running' ? 'status-planned' : 'status-empty'}`}>{run.status === 'completed' ? 'ABGESCHLOSSEN' : run.status === 'running' ? 'LÄUFT' : 'FEHLGESCHLAGEN'}</span><time>{new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(run.created_at))}</time></div><h3>{run.prompt}</h3>{run.response && <p className="agent-answer">{run.response}</p>}{run.error_code && <p className="agent-error">Der Aufruf ist fehlgeschlagen ({run.error_code}). Bitte prüfen Sie die Verbindung und versuchen Sie es erneut.</p>}</article>)}</section></div>;
 }
 
+function MyAgentsArea() {
+  const [agents, setAgents] = useState<MyAgent[]>([]);
+  const [busySlug, setBusySlug] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const refresh = useCallback(async () => setAgents((await api<{ agents: MyAgent[] }>('/my-agents')).agents), []);
+  useEffect(() => { void refresh().catch((cause: unknown) => setError(errorText(cause))); }, [refresh]);
+
+  async function toggle(agent: MyAgent) {
+    setBusySlug(agent.slug); setError('');
+    try {
+      const status = agent.status === 'active' ? 'paused' : 'active';
+      await api(`/my-agents/${agent.slug}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      await refresh();
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setBusySlug(null); }
+  }
+
+  return <div className="subpage"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM</span><h1>Meine Agenten</h1><p>Agenten, die in Ihrer aktiven Organisation installiert sind.</p></div><button className="button-primary" onClick={() => window.location.assign('/app/marketplace')}><Layers3 size={15} /> Agenten entdecken</button></div>{error && <div className="form-error" role="alert">{error}</div>}{agents.length ? <div className="agent-catalog-grid">{agents.map((agent) => <article className="panel-card agent-catalog-card" key={agent.slug}><div className="agent-card-top"><span className="overview-icon icon-lime"><Bot size={18} /></span><span className={`status-chip ${agent.status === 'active' ? 'status-connected' : 'status-planned'}`}>{agent.status === 'active' ? 'AKTIV' : 'PAUSIERT'}</span></div><span className="section-kicker">{agent.category.toUpperCase()}</span><h2>{agent.name}</h2><p>{agent.description}</p><div className="agent-catalog-meta"><span>Version {agent.installed_version}</span><span>Seit {new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium' }).format(new Date(agent.created_at))}</span></div><div className="agent-card-actions"><button className="button-primary" onClick={() => window.location.assign(`/app/agents/${agent.slug}`)}>Öffnen <ArrowRight size={14} /></button><button className="button-secondary" onClick={() => void toggle(agent)} disabled={busySlug !== null}>{busySlug === agent.slug ? 'Wird gespeichert …' : agent.status === 'active' ? 'Pausieren' : 'Fortsetzen'}</button></div></article>)}</div> : !error && <div className="panel-card empty-inline">Noch keine Agenten installiert. Öffnen Sie den Katalog und fügen Sie einen Assistenten zu Ihrem Unternehmen hinzu.</div>}</div>;
+}
+
 function MarketplaceArea() {
   const [agents, setAgents] = useState<AgentTemplate[]>([]);
   const [busySlug, setBusySlug] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('Alle Bereiche');
   const refresh = useCallback(async () => setAgents((await api<{ agents: AgentTemplate[] }>('/agents')).agents), []);
   useEffect(() => { void refresh().catch((cause: unknown) => setError(errorText(cause))); }, [refresh]);
+
+  const categories = ['Alle Bereiche', ...new Set(agents.map((agent) => agent.category))];
+  const visibleAgents = agents.filter((agent) => {
+    const matchesCategory = category === 'Alle Bereiche' || agent.category === category;
+    const matchesQuery = `${agent.name} ${agent.description} ${agent.category}`.toLowerCase().includes(query.trim().toLowerCase());
+    return matchesCategory && matchesQuery;
+  });
 
   async function install(slug: string) {
     setBusySlug(slug); setError('');
@@ -370,7 +409,115 @@ function MarketplaceArea() {
     finally { setBusySlug(null); }
   }
 
-  return <div className="subpage"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM</span><h1>Agentenkatalog</h1><p>Verfügbare Agenten für Ihren geschützten Arbeitsbereich.</p></div><span className="panel-count">{agents.length} verfügbar</span></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="agent-catalog-grid">{agents.map((agent) => <article className="panel-card agent-catalog-card" key={agent.slug}><span className="overview-icon icon-lime"><Bot size={18} /></span><span className="section-kicker">{agent.category.toUpperCase()}</span><h2>{agent.name}</h2><p>{agent.description}</p><div className="agent-catalog-meta"><span>Version {agent.version}.0</span><span>{agent.default_model}</span></div>{agent.installed_status ? <button className="button-secondary" onClick={() => window.location.assign('/app/agents')}>{agent.installed_status === 'active' ? 'In Meine Agenten öffnen' : 'Installiert · pausiert'} <ArrowRight size={14} /></button> : <button className="button-primary" onClick={() => void install(agent.slug)} disabled={busySlug !== null}>{busySlug === agent.slug ? 'Wird installiert …' : 'Agent installieren'} <ArrowRight size={14} /></button>}</article>)}</div>{agents.length === 0 && !error && <div className="panel-card empty-inline">Der Katalog wird geladen.</div>}</div>;
+  return <div className="subpage"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM</span><h1>Agentenkatalog</h1><p>Entdecken Sie Assistenten, die Sie sicher in Ihrem Unternehmen einsetzen können.</p></div><span className="panel-count">{agents.length} Agenten</span></div><div className="catalog-toolbar"><label className="catalog-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Agenten suchen …" /></label><div className="catalog-filter" role="group" aria-label="Agentenkategorie filtern">{categories.map((item) => <button key={item} className={category === item ? 'selected' : ''} onClick={() => setCategory(item)}>{item === 'Alle Bereiche' ? item : categoryLabel(item)}</button>)}</div></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="agent-catalog-grid">{visibleAgents.map((agent) => <article className="panel-card agent-catalog-card" key={agent.slug}><div className="agent-card-top"><span className="overview-icon icon-lime"><Bot size={18} /></span>{agent.installed_status && <span className={`status-chip ${agent.installed_status === 'active' ? 'status-connected' : 'status-planned'}`}>{agent.installed_status === 'active' ? 'INSTALLIERT' : 'PAUSIERT'}</span>}</div><span className="section-kicker">{categoryLabel(agent.category).toUpperCase()}</span><h2>{agent.name}</h2><p>{agent.description}</p><div className="agent-catalog-meta"><span>Version {agent.version}</span><span>{agent.default_model}</span></div><div className="agent-card-actions">{agent.installed_status ? <button className="button-secondary" onClick={() => window.location.assign(`/app/agents/${agent.slug}`)}>In Meine Agenten öffnen <ArrowRight size={14} /></button> : <button className="button-primary" onClick={() => void install(agent.slug)} disabled={busySlug !== null}>{busySlug === agent.slug ? 'Wird hinzugefügt …' : 'Zum Unternehmen hinzufügen'} <ArrowRight size={14} /></button>}<button className="catalog-detail-link" onClick={() => window.location.assign(`/app/agents/${agent.slug}`)}>Details ansehen</button></div></article>)}</div>{visibleAgents.length === 0 && !error && <div className="panel-card empty-inline">Keine Agenten für diese Suche gefunden.</div>}<p className="catalog-honesty-note"><ShieldCheck size={14} /> Diese Assistenten bearbeiten nur Texte, die Sie eingeben. Sie versenden keine Nachrichten und greifen nicht auf externe Unternehmenssysteme zu.</p></div>;
+}
+
+function categoryLabel(value: string): string {
+  return ({ communication: 'Kommunikation', documents: 'Dokumente', sales: 'Vertrieb', support: 'Kundenservice', productivity: 'Produktivität', research: 'Recherche', finance: 'Finanzen' } as Record<string, string>)[value] ?? value;
+}
+
+function WorkflowArea() {
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [agents, setAgents] = useState<AgentTemplate[]>([]);
+  const [installed, setInstalled] = useState<MyAgent[]>([]);
+  const [draft, setDraft] = useState<(Omit<Workflow, 'id' | 'run_count' | 'updated_at' | 'status'> & { id?: string }) | null>(null);
+  const [trace, setTrace] = useState<WorkflowTrace[] | null>(null);
+  const [traceMessage, setTraceMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    const [workflowResult, agentResult, myAgentResult] = await Promise.all([
+      api<{ workflows: Workflow[] }>('/workflows'),
+      api<{ agents: AgentTemplate[] }>('/agents'),
+      api<{ agents: MyAgent[] }>('/my-agents'),
+    ]);
+    setWorkflows(workflowResult.workflows);
+    setAgents(agentResult.agents);
+    setInstalled(myAgentResult.agents);
+  }, []);
+
+  useEffect(() => { void refresh().catch((cause: unknown) => setError(errorText(cause))); }, [refresh]);
+
+  function createWorkflow() {
+    const defaultAgent = agents.find((agent) => agent.slug === 'support-answer-draft')?.slug ?? installed.find((agent) => agent.status === 'active')?.slug ?? agents[0]?.slug ?? 'workspace-assistant';
+    setDraft({ name: 'Kundenanfrage sicher bearbeiten', description: 'Vorlage: Anfrage manuell starten, Antwortentwurf erstellen und vor dem Versand durch einen Menschen prüfen. Es wird nichts automatisch versendet.', definition: { nodes: [
+      { id: 'manual-start', type: 'trigger', label: 'Anfrage manuell starten' },
+      { id: 'agent-step', type: 'agent', label: 'Antwortentwurf erstellen', agentSlug: defaultAgent },
+      { id: 'human-review', type: 'approval', label: 'Antwort durch Team prüfen' },
+    ] } });
+    setTrace(null); setTraceMessage(''); setError('');
+  }
+
+  function editWorkflow(workflow: Workflow) {
+    setDraft({ id: workflow.id, name: workflow.name, description: workflow.description, definition: workflow.definition });
+    setTrace(null); setTraceMessage(''); setError('');
+  }
+
+  function updateNode(index: number, patch: Partial<WorkflowNode>) {
+    if (!draft) return;
+    const nodes = [...draft.definition.nodes];
+    nodes[index] = { ...nodes[index]!, ...patch };
+    setDraft({ ...draft, definition: { nodes } });
+  }
+
+  function moveNode(index: number, direction: -1 | 1) {
+    if (!draft) return;
+    const target = index + direction;
+    if (target <= 0 || target >= draft.definition.nodes.length) return;
+    const nodes = [...draft.definition.nodes];
+    [nodes[index], nodes[target]] = [nodes[target]!, nodes[index]!];
+    setDraft({ ...draft, definition: { nodes } });
+  }
+
+  function addNode(type: 'agent' | 'approval') {
+    if (!draft) return;
+    const id = `${type}-${crypto.randomUUID().slice(0, 8)}`;
+    const node: WorkflowNode = type === 'agent'
+      ? { id, type, label: 'Neuer Agentenschritt', agentSlug: installed.find((agent) => agent.status === 'active')?.slug ?? agents[0]?.slug ?? 'workspace-assistant' }
+      : { id, type, label: 'Menschliche Prüfung' };
+    setDraft({ ...draft, definition: { nodes: [...draft.definition.nodes, node] } });
+  }
+
+  async function saveWorkflow(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft) return;
+    setBusy(true); setError(''); setTrace(null);
+    try {
+      const endpoint = draft.id ? `/workflows/${draft.id}` : '/workflows';
+      const saved = await api<{ workflow: Workflow }>(endpoint, {
+        method: draft.id ? 'PUT' : 'POST',
+        body: JSON.stringify({ name: draft.name, description: draft.description, nodes: draft.definition.nodes }),
+      });
+      setDraft({ id: saved.workflow.id, name: saved.workflow.name, description: saved.workflow.description, definition: saved.workflow.definition });
+      await refresh();
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(false); }
+  }
+
+  async function runDryRun(workflow: Workflow) {
+    setBusy(true); setError(''); setTrace(null);
+    try {
+      const result = await api<{ run: { status: 'validated' | 'blocked'; trace: WorkflowTrace[]; message: string } }>(`/workflows/${workflow.id}/run`, { method: 'POST', body: JSON.stringify({}) });
+      setTrace(result.run.trace); setTraceMessage(result.run.message); await refresh();
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="subpage workflow-page">
+    <div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> ABLÄUFE</span><h1>Automatisierungen</h1><p>Stellen Sie Agenten und menschliche Prüfschritte zu einem nachvollziehbaren Ablauf zusammen.</p></div><button className="button-primary" onClick={createWorkflow}><Plus size={16} /> Neue Automatisierung</button></div>
+    <section className="workflow-explainer"><div className="workflow-explainer-icon"><Workflow size={19} /></div><div><strong>Erst zusammenstellen, dann sicher prüfen.</strong><p>Der Probelauf kontrolliert Agenten und Verbindungen. Er sendet keine KI-Anfrage und führt keine E-Mail-, CRM- oder Finanzaktion aus.</p></div></section>
+    <section className="panel-card workflow-template-card"><div className="workflow-template-mark"><Sparkles size={17} /></div><div className="workflow-template-copy"><span className="section-kicker">STARTVORLAGE · KUNDENSERVICE</span><h2>Kundenanfrage sicher bearbeiten</h2><p>Manueller Start <b>→</b> Antwortentwurf durch KI <b>→</b> Prüfung durch Ihr Team. Die Vorlage wird erst Teil Ihrer Organisation, wenn Sie sie speichern.</p></div><button className="button-secondary" onClick={createWorkflow}>Vorlage ansehen <ArrowRight size={14} /></button></section>
+    {error && <div className="form-error" role="alert">{error}</div>}
+    {draft && <section className="panel-card workflow-editor"><div className="panel-title"><div><span className="section-kicker">WORKFLOW-EDITOR</span><h2>{draft.id ? 'Automatisierung bearbeiten' : 'Neue Automatisierung'}</h2></div><button className="icon-button" onClick={() => setDraft(null)} aria-label="Editor schließen"><X size={16} /></button></div><form onSubmit={(event) => void saveWorkflow(event)}>
+      <div className="workflow-form-grid"><label>Name<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} minLength={2} maxLength={120} required /></label><label>Beschreibung<input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} maxLength={600} placeholder="Was soll dieser Ablauf unterstützen?" /></label></div>
+      <div className="workflow-node-list">{draft.definition.nodes.map((node, index) => <div className={`workflow-node workflow-node-${node.type}`} key={node.id}><span className="workflow-node-index">{String(index + 1).padStart(2, '0')}</span><span className="workflow-node-icon">{node.type === 'trigger' ? <Play size={15} /> : node.type === 'agent' ? <Bot size={15} /> : <Check size={15} />}</span><div className="workflow-node-fields"><span className="section-kicker">{node.type === 'trigger' ? 'AUSLÖSER' : node.type === 'agent' ? 'KI-AGENT' : 'MENSCHLICHE FREIGABE'}</span><input aria-label="Schrittname" value={node.label} onChange={(event) => updateNode(index, { label: event.target.value })} minLength={2} maxLength={80} required />{node.type === 'agent' && <select aria-label="Agent auswählen" value={node.agentSlug ?? ''} onChange={(event) => updateNode(index, { agentSlug: event.target.value })}>{agents.map((agent) => <option key={agent.slug} value={agent.slug}>{agent.name}{agent.installed_status ? ' · installiert' : ' · noch nicht installiert'}</option>)}</select>}</div><div className="workflow-node-actions"><button type="button" className="icon-button" onClick={() => moveNode(index, -1)} disabled={index <= 1} aria-label="Schritt nach oben"><ArrowUp size={14} /></button><button type="button" className="icon-button" onClick={() => moveNode(index, 1)} disabled={index === draft.definition.nodes.length - 1} aria-label="Schritt nach unten"><ArrowDown size={14} /></button>{node.type !== 'trigger' && <button type="button" className="icon-button" onClick={() => setDraft({ ...draft, definition: { nodes: draft.definition.nodes.filter((_, nodeIndex) => nodeIndex !== index) } })} aria-label="Schritt entfernen"><Trash2 size={14} /></button>}</div></div>)}</div>
+      <div className="workflow-add-actions"><button type="button" className="button-secondary" onClick={() => addNode('agent')}><Plus size={14} /> Agentenschritt</button><button type="button" className="button-secondary" onClick={() => addNode('approval')}><Plus size={14} /> Prüfschritt</button><span>{draft.definition.nodes.length} / 12 Schritte</span></div>
+      <div className="workflow-editor-footer"><button type="button" className="button-secondary" onClick={() => setDraft(null)}>Abbrechen</button><button type="submit" className="button-primary" disabled={busy}>{busy ? 'Wird gespeichert …' : 'Automatisierung speichern'} <Save size={14} /></button></div>
+    </form></section>}
+    <section className="workflow-list-section"><div className="panel-title"><div><h2>Ihre Abläufe</h2><p>{workflows.length ? 'Gespeicherte Entwürfe Ihrer Organisation.' : 'Erstellen Sie Ihren ersten Ablauf aus Agenten und Prüfschritten.'}</p></div><span className="panel-count">{workflows.length}</span></div>{workflows.length ? <div className="workflow-list">{workflows.map((workflow) => <article className="panel-card workflow-card" key={workflow.id}><div className="workflow-card-heading"><span className="workflow-card-icon"><Workflow size={17} /></span><span className="status-chip status-planned">ENTWURF</span></div><h3>{workflow.name}</h3><p>{workflow.description || `${workflow.definition.nodes.length} Schritte in diesem Ablauf.`}</p><div className="workflow-mini-flow">{workflow.definition.nodes.map((node, index) => <span key={node.id}>{index > 0 && <i>→</i>}{node.type === 'trigger' ? 'Start' : node.type === 'agent' ? agents.find((agent) => agent.slug === node.agentSlug)?.name ?? 'Agent' : 'Prüfung'}</span>)}</div><div className="workflow-card-footer"><span>{workflow.run_count} Probeläufe</span><div><button className="button-secondary" onClick={() => editWorkflow(workflow)}>Bearbeiten</button><button className="button-primary" onClick={() => void runDryRun(workflow)} disabled={busy}><Play size={14} /> Probelauf</button></div></div></article>)}</div> : <div className="panel-card empty-inline workflow-empty"><Workflow size={20} /><span>Noch keine Automatisierung gespeichert.</span><button className="text-action" onClick={createWorkflow}>Mit einem Beispiel starten <ArrowRight size={14} /></button></div>}</section>
+    {trace && <section className="panel-card workflow-trace"><div className="panel-title"><div><h2>Ergebnis des Probelaufs</h2><p>{traceMessage}</p></div><span className={`status-chip ${trace.some((step) => step.status === 'blocked') ? 'status-empty' : 'status-connected'}`}>{trace.some((step) => step.status === 'blocked') ? 'PRÜFUNG ERFORDERLICH' : 'KONFIGURATION GÜLTIG'}</span></div><div className="workflow-trace-list">{trace.map((step) => <div className="workflow-trace-row" key={step.id}><span className={step.status === 'ready' ? 'trace-check' : 'trace-blocked'}>{step.status === 'ready' ? <Check size={14} /> : <X size={14} />}</span><span><strong>{step.label}</strong><small>{step.detail}</small></span></div>)}</div></section>}
+  </div>;
 }
 
 function UnavailablePage({ section, onBack }: { section: Section; onBack: () => void }) {

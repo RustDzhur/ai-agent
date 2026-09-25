@@ -39,3 +39,25 @@ export const assistantRunSchema = z.object({
 export const tenantAgentStatusSchema = z.object({
   status: z.enum(['active', 'paused']),
 }).strict();
+
+const workflowId = z.string().regex(/^[a-z0-9-]{1,48}$/);
+const workflowTriggerNode = z.object({ id: workflowId, type: z.literal('trigger'), label: z.string().trim().min(2).max(80) }).strict();
+const workflowAgentNode = z.object({
+  id: workflowId,
+  type: z.literal('agent'),
+  label: z.string().trim().min(2).max(80),
+  agentSlug: workflowId,
+}).strict();
+const workflowApprovalNode = z.object({ id: workflowId, type: z.literal('approval'), label: z.string().trim().min(2).max(80) }).strict();
+
+export const workflowSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  description: z.string().trim().max(600).default(''),
+  nodes: z.array(z.discriminatedUnion('type', [workflowTriggerNode, workflowAgentNode, workflowApprovalNode])).min(2).max(12),
+}).strict().superRefine((workflow, context) => {
+  if (workflow.nodes[0]?.type !== 'trigger') context.addIssue({ code: 'custom', message: 'A workflow must start with a trigger', path: ['nodes', 0] });
+  if (!workflow.nodes.some((node) => node.type === 'agent')) context.addIssue({ code: 'custom', message: 'A workflow must contain an agent step', path: ['nodes'] });
+  if (new Set(workflow.nodes.map((node) => node.id)).size !== workflow.nodes.length) context.addIssue({ code: 'custom', message: 'Workflow node IDs must be unique', path: ['nodes'] });
+});
+
+export const workflowStatusSchema = z.object({ status: z.enum(['draft', 'active', 'paused']) }).strict();
