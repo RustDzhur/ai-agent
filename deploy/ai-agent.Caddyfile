@@ -1,4 +1,4 @@
-ai-agent.firmspace.eu {
+ai-agent.firmspace.eu, www.ai-agent.firmspace.eu {
 	root * /opt/projects/firmspace/frontend/public
 	encode gzip
 	header {
