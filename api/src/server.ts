@@ -1,0 +1,539 @@
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import argon2 from 'argon2';
+import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import { Redis } from 'ioredis';
+import { config } from './config.js';
+import { inTransaction, pool, setRequestContext, type DbClient } from './db/pool.js';
+import {
+  createOrganizationSchema,
+  loginSchema,
+  registerSchema,
+  selectOrganizationSchema,
+  updateOrganizationSchema,
+} from './auth/schemas.js';
+
+const SESSION_COOKIE = config.cookieSecure ? '__Host-fs_session' : 'fs_session';
+const CSRF_COOKIE = config.cookieSecure ? '__Host-fs_csrf' : 'fs_csrf';
+const sessionTtlSeconds = config.SESSION_TTL_HOURS * 60 * 60;
+const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const dummyPasswordHash = argon2.hash('fixed-non-user-account-dummy-password', {
+  type: argon2.argon2id,
+  memoryCost: 65_536,
+  timeCost: 3,
+  parallelism: 1,
+});
+
+type Session = {
+  id: string;
+  userId: string;
+  fullName: string;
+  email: string;
+  activeOrganizationId: string | null;
+};
+
+type MemberRole = 'owner' | 'admin' | 'member' | 'viewer';
+
+class HttpError extends Error {
+  constructor(public readonly statusCode: number, public readonly code: string) {
+    super(code);
+  }
+}
+
+const redis = new Redis({
+  host: config.REDIS_HOST,
+  port: config.REDIS_PORT,
+  username: config.REDIS_USERNAME,
+  password: config.REDIS_PASSWORD,
+  lazyConnect: true,
+  connectTimeout: 2_000,
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+});
+
+const app = Fastify({
+  logger: {
+    level: process.env.LOG_LEVEL ?? 'info',
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'req.body.password',
+        'req.body.passwordHash',
+        'res.headers.set-cookie',
+      ],
+      censor: '[REDACTED]',
+    },
+  },
+  bodyLimit: 64 * 1024,
+  trustProxy: true,
+  genReqId(request) {
+    const incoming = request.headers['x-request-id'];
+    if (typeof incoming === 'string' && /^[a-zA-Z0-9._:-]{1,100}$/.test(incoming)) return incoming;
+    return randomUUID();
+  },
+});
+
+await app.register(cookie);
+await app.register(helmet, { contentSecurityPolicy: false });
+await app.register(rateLimit, {
+  global: false,
+  max: 120,
+  timeWindow: '1 minute',
+  redis,
+  nameSpace: 'firmspace:rate-limit:',
+  skipOnError: false,
+});
+
+app.addHook('onRequest', async (request, reply) => {
+  reply.header('X-Request-Id', request.id);
+  reply.header('X-Trace-Id', request.id);
+});
+
+pool.on('error', (error: Error) => app.log.error({ err: error }, 'Idle PostgreSQL client error'));
+redis.on('error', (error: Error) => app.log.error({ err: error }, 'Redis connection error'));
+
+function safeTokenEqual(a: string, b: string): boolean {
+  if (!/^[a-f0-9]{64}$/.test(a) || !/^[a-f0-9]{64}$/.test(b)) return false;
+  return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+}
+
+function setCsrfCookie(reply: FastifyReply, token: string): void {
+  reply.setCookie(CSRF_COOKIE, token, {
+    path: '/',
+    secure: config.cookieSecure,
+    httpOnly: false,
+    sameSite: 'strict',
+    maxAge: sessionTtlSeconds,
+  });
+}
+
+function setSessionCookie(reply: FastifyReply, token: string): void {
+  reply.setCookie(SESSION_COOKIE, token, {
+    path: '/',
+    secure: config.cookieSecure,
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: sessionTtlSeconds,
+  });
+}
+
+function clearAuthCookies(reply: FastifyReply): void {
+  reply.clearCookie(SESSION_COOKIE, { path: '/', secure: config.cookieSecure, httpOnly: true, sameSite: 'lax' });
+  reply.clearCookie(CSRF_COOKIE, { path: '/', secure: config.cookieSecure, sameSite: 'strict' });
+}
+
+function issueCsrf(reply: FastifyReply): string {
+  const token = randomBytes(32).toString('hex');
+  setCsrfCookie(reply, token);
+  return token;
+}
+
+async function findSession(request: FastifyRequest): Promise<Session | null> {
+  const rawToken = request.cookies[SESSION_COOKIE];
+  if (!rawToken || rawToken.length > 128) return null;
+  const tokenHash = createHash('sha256').update(rawToken).digest();
+  const result = await pool.query<{
+    id: string;
+    user_id: string;
+    full_name: string;
+    email: string;
+    active_organization_id: string | null;
+  }>(
+    `SELECT sessions.id, sessions.user_id, users.full_name, users.email, sessions.active_organization_id
+     FROM sessions JOIN users ON users.id = sessions.user_id
+     WHERE sessions.token_hash = $1 AND sessions.expires_at > now()`,
+    [tokenHash],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    fullName: row.full_name,
+    email: row.email,
+    activeOrganizationId: row.active_organization_id,
+  };
+}
+
+async function createSession(client: DbClient, userId: string, activeOrganizationId: string | null): Promise<string> {
+  const rawToken = randomBytes(32).toString('base64url');
+  const tokenHash = createHash('sha256').update(rawToken).digest();
+  await client.query(
+    `INSERT INTO sessions (id, user_id, token_hash, active_organization_id, expires_at)
+     VALUES ($1, $2, $3, $4, now() + ($5 * interval '1 second'))`,
+    [randomUUID(), userId, tokenHash, activeOrganizationId, sessionTtlSeconds],
+  );
+  return rawToken;
+}
+
+async function listOrganizations(client: DbClient, userId: string) {
+  await setRequestContext(client, userId);
+  const result = await client.query<{
+    organization_id: string;
+    organization_name: string;
+    role: MemberRole;
+    created_at: Date;
+  }>(
+    `SELECT organizations.id AS organization_id, organizations.name AS organization_name,
+            memberships.role, organizations.created_at
+     FROM organization_memberships memberships
+     JOIN organizations ON organizations.id = memberships.organization_id
+     WHERE memberships.user_id = $1 AND memberships.status = 'active'
+     ORDER BY organizations.name`,
+    [userId],
+  );
+  return result.rows.map((row) => ({
+    id: row.organization_id,
+    name: row.organization_name,
+    role: row.role,
+    createdAt: row.created_at,
+  }));
+}
+
+async function requireSession(request: FastifyRequest, reply: FastifyReply): Promise<Session | null> {
+  const session = await findSession(request);
+  if (!session) {
+    reply.code(401).send({ error: 'authentication_required' });
+    return null;
+  }
+  request.log.info({ user_id: session.userId, tenant_id: session.activeOrganizationId, trace_id: request.id }, 'Authenticated API request');
+  return session;
+}
+
+async function withTenant<T>(
+  session: Session,
+  operation: (client: DbClient, role: MemberRole) => Promise<T>,
+): Promise<T> {
+  if (!session.activeOrganizationId) throw new HttpError(403, 'organization_access_required');
+  return inTransaction(async (client) => {
+    await setRequestContext(client, session.userId, session.activeOrganizationId);
+    const membership = await client.query<{ role: MemberRole }>(
+      `SELECT role FROM organization_memberships
+       WHERE organization_id = $1 AND user_id = $2 AND status = 'active'`,
+      [session.activeOrganizationId, session.userId],
+    );
+    const role = membership.rows[0]?.role;
+    if (!role) throw new HttpError(403, 'organization_access_required');
+    return operation(client, role);
+  });
+}
+
+async function writeAudit(
+  client: DbClient,
+  request: FastifyRequest,
+  session: Session,
+  action: string,
+  metadata: Record<string, string | number | boolean | null> = {},
+): Promise<void> {
+  if (!session.activeOrganizationId) return;
+  await client.query(
+    `INSERT INTO audit_logs (id, organization_id, user_id, request_id, action, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+    [randomUUID(), session.activeOrganizationId, session.userId, request.id, action, JSON.stringify(metadata)],
+  );
+}
+
+app.addHook('preHandler', async (request, reply) => {
+  if (!request.url.startsWith('/api/v1/') || !unsafeMethods.has(request.method)) return;
+  const origin = request.headers.origin;
+  if (!origin || !config.origins.has(origin)) {
+    reply.code(403).send({ error: 'origin_not_allowed' });
+    return;
+  }
+  const csrfCookie = request.cookies[CSRF_COOKIE];
+  const csrfHeader = request.headers['x-csrf-token'];
+  if (typeof csrfHeader !== 'string' || typeof csrfCookie !== 'string' || !safeTokenEqual(csrfCookie, csrfHeader)) {
+    reply.code(403).send({ error: 'csrf_validation_failed' });
+  }
+});
+
+app.setErrorHandler((error, request, reply) => {
+  if (error instanceof HttpError) {
+    reply.code(error.statusCode).send({ error: error.code, requestId: request.id });
+    return;
+  }
+  if (error instanceof Error && 'validation' in error && error.validation) {
+    reply.code(400).send({ error: 'invalid_request', requestId: request.id });
+    return;
+  }
+  request.log.error({ err: error }, 'Unhandled request error');
+  reply.code(500).send({ error: 'internal_error', requestId: request.id });
+});
+
+app.get('/health/live', async () => ({ status: 'ok' }));
+app.get('/health/ready', async (_request, reply) => {
+  try {
+    await pool.query('SELECT 1');
+    await redis.ping();
+    return { status: 'ready' };
+  } catch {
+    return reply.code(503).send({ status: 'not_ready' });
+  }
+});
+
+app.get('/api/v1/auth/session', async (request, reply) => {
+  let csrfToken = request.cookies[CSRF_COOKIE];
+  if (!csrfToken || !/^[a-f0-9]{64}$/.test(csrfToken)) csrfToken = issueCsrf(reply);
+  const session = await findSession(request);
+  if (!session) return { authenticated: false, csrfToken };
+
+  const organizations = await inTransaction((client) => listOrganizations(client, session.userId));
+  let activeOrganizationId = session.activeOrganizationId;
+  if (!organizations.some((organization) => organization.id === activeOrganizationId)) {
+    activeOrganizationId = organizations[0]?.id ?? null;
+    await pool.query('UPDATE sessions SET active_organization_id = $1 WHERE id = $2', [activeOrganizationId, session.id]);
+  }
+  const activeOrganization = organizations.find((organization) => organization.id === activeOrganizationId) ?? null;
+
+  return {
+    authenticated: true,
+    csrfToken,
+    user: { id: session.userId, fullName: session.fullName, email: session.email },
+    organizations,
+    activeOrganization,
+  };
+});
+
+app.post('/api/v1/auth/register', {
+  config: { rateLimit: { max: 4, timeWindow: '1 hour' } },
+}, async (request, reply) => {
+  const parsed = registerSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  const input = parsed.data;
+  const passwordHash = await argon2.hash(input.password, {
+    type: argon2.argon2id,
+    memoryCost: 65_536,
+    timeCost: 3,
+    parallelism: 1,
+  });
+  const userId = randomUUID();
+  const organizationId = randomUUID();
+  let rawSession: string;
+  try {
+    rawSession = await inTransaction(async (client) => {
+      await client.query(
+        'INSERT INTO users (id, full_name, email, password_hash) VALUES ($1, $2, $3, $4)',
+        [userId, input.fullName, input.email, passwordHash],
+      );
+      await setRequestContext(client, userId, organizationId);
+      await client.query('INSERT INTO organizations (id, name) VALUES ($1, $2)', [organizationId, input.organizationName]);
+      await client.query(
+        `INSERT INTO organization_memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')`,
+        [organizationId, userId],
+      );
+      const sessionToken = await createSession(client, userId, organizationId);
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, request_id, action, metadata)
+         VALUES ($1, $2, $3, $4, 'account.registered', '{}'::jsonb)`,
+        [randomUUID(), organizationId, userId, request.id],
+      );
+      return sessionToken;
+    });
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
+      return reply.code(409).send({ error: 'email_already_registered' });
+    }
+    throw error;
+  }
+
+  setSessionCookie(reply, rawSession);
+  const csrfToken = issueCsrf(reply);
+  reply.code(201);
+  return { authenticated: true, csrfToken };
+});
+
+app.post('/api/v1/auth/login', {
+  config: { rateLimit: { max: 8, timeWindow: '15 minutes' } },
+}, async (request, reply) => {
+  const parsed = loginSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  const result = await pool.query<{ id: string; password_hash: string }>(
+    'SELECT id, password_hash FROM users WHERE lower(email) = $1',
+    [parsed.data.email],
+  );
+  const account = result.rows[0];
+  const passwordValid = await argon2.verify(account?.password_hash ?? await dummyPasswordHash, parsed.data.password).catch(() => false);
+  if (!account || !passwordValid) return reply.code(401).send({ error: 'invalid_credentials' });
+
+  const created = await inTransaction(async (client) => {
+    const organizations = await listOrganizations(client, account.id);
+    const activeOrganizationId = organizations[0]?.id ?? null;
+    const sessionToken = await createSession(client, account.id, activeOrganizationId);
+    if (activeOrganizationId) {
+      await setRequestContext(client, account.id, activeOrganizationId);
+      await client.query(
+        `INSERT INTO audit_logs (id, organization_id, user_id, request_id, action, metadata)
+         VALUES ($1, $2, $3, $4, 'account.login', '{}'::jsonb)`,
+        [randomUUID(), activeOrganizationId, account.id, request.id],
+      );
+    }
+    return { sessionToken, activeOrganizationId };
+  });
+
+  setSessionCookie(reply, created.sessionToken);
+  const csrfToken = issueCsrf(reply);
+  return { authenticated: true, csrfToken, activeOrganizationId: created.activeOrganizationId };
+});
+
+app.post('/api/v1/auth/logout', async (request, reply) => {
+  const session = await findSession(request);
+  if (session) {
+    await inTransaction(async (client) => {
+      if (session.activeOrganizationId) {
+        await setRequestContext(client, session.userId, session.activeOrganizationId);
+        await writeAudit(client, request, session, 'account.logout');
+      }
+      await client.query('DELETE FROM sessions WHERE id = $1', [session.id]);
+    });
+  }
+  clearAuthCookies(reply);
+  return { authenticated: false };
+});
+
+app.post('/api/v1/organizations', {
+  config: { rateLimit: { max: 10, timeWindow: '1 hour' } },
+}, async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const parsed = createOrganizationSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  const organizationId = randomUUID();
+
+  await inTransaction(async (client) => {
+    await setRequestContext(client, session.userId, organizationId);
+    await client.query('INSERT INTO organizations (id, name) VALUES ($1, $2)', [organizationId, parsed.data.name]);
+    await client.query(
+      `INSERT INTO organization_memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')`,
+      [organizationId, session.userId],
+    );
+    await client.query('UPDATE sessions SET active_organization_id = $1 WHERE id = $2', [organizationId, session.id]);
+    await writeAudit(client, request, { ...session, activeOrganizationId: organizationId }, 'organization.created');
+  });
+  return reply.code(201).send({ id: organizationId, name: parsed.data.name, role: 'owner' });
+});
+
+app.post('/api/v1/organizations/select', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const parsed = selectOrganizationSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  const selected = await inTransaction(async (client) => {
+    await setRequestContext(client, session.userId);
+    const membership = await client.query<{ role: MemberRole; name: string }>(
+      `SELECT memberships.role, organizations.name
+       FROM organization_memberships memberships
+       JOIN organizations ON organizations.id = memberships.organization_id
+       WHERE memberships.organization_id = $1 AND memberships.user_id = $2 AND memberships.status = 'active'`,
+      [parsed.data.organizationId, session.userId],
+    );
+    const row = membership.rows[0];
+    if (!row) throw new HttpError(403, 'organization_access_required');
+    await client.query('UPDATE sessions SET active_organization_id = $1 WHERE id = $2', [parsed.data.organizationId, session.id]);
+    await setRequestContext(client, session.userId, parsed.data.organizationId);
+    await writeAudit(client, request, { ...session, activeOrganizationId: parsed.data.organizationId }, 'organization.switched');
+    return { id: parsed.data.organizationId, name: row.name, role: row.role };
+  });
+  return { activeOrganization: selected };
+});
+
+app.get('/api/v1/organizations/current', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client, role) => {
+    const result = await client.query<{ id: string; name: string; created_at: Date }>(
+      'SELECT id, name, created_at FROM organizations WHERE id = $1',
+      [session.activeOrganizationId],
+    );
+    const organization = result.rows[0];
+    if (!organization) throw new HttpError(403, 'organization_access_required');
+    return { ...organization, role };
+  });
+});
+
+app.get('/api/v1/organizations/current/members', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client) => {
+    const result = await client.query<{
+      user_id: string;
+      full_name: string;
+      email: string;
+      role: MemberRole;
+      created_at: Date;
+    }>(
+      `SELECT users.id AS user_id, users.full_name, users.email, memberships.role, memberships.created_at
+       FROM organization_memberships memberships
+       JOIN users ON users.id = memberships.user_id
+       WHERE memberships.organization_id = $1 AND memberships.status = 'active'
+       ORDER BY memberships.created_at, users.full_name`,
+      [session.activeOrganizationId],
+    );
+    return { members: result.rows };
+  });
+});
+
+app.patch('/api/v1/organizations/current', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const parsed = updateOrganizationSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  return withTenant(session, async (client, role) => {
+    if (role !== 'owner' && role !== 'admin') throw new HttpError(403, 'permission_denied');
+    const result = await client.query<{ id: string; name: string; updated_at: Date }>(
+      `UPDATE organizations SET name = $1, updated_at = now() WHERE id = $2 RETURNING id, name, updated_at`,
+      [parsed.data.name, session.activeOrganizationId],
+    );
+    await writeAudit(client, request, session, 'organization.updated', { name: parsed.data.name });
+    return result.rows[0];
+  });
+});
+
+app.get('/api/v1/organizations/current/audit', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client) => {
+    const result = await client.query<{
+      id: string;
+      user_id: string | null;
+      full_name: string | null;
+      action: string;
+      metadata: Record<string, unknown>;
+      request_id: string;
+      created_at: Date;
+    }>(
+      `SELECT audit_logs.id, audit_logs.user_id, users.full_name, audit_logs.action,
+              audit_logs.metadata, audit_logs.request_id, audit_logs.created_at
+       FROM audit_logs LEFT JOIN users ON users.id = audit_logs.user_id
+       WHERE audit_logs.organization_id = $1
+       ORDER BY audit_logs.created_at DESC LIMIT 50`,
+      [session.activeOrganizationId],
+    );
+    return { events: result.rows };
+  });
+});
+
+async function start(): Promise<void> {
+  await redis.connect();
+  await redis.ping();
+  await pool.query('SELECT 1');
+  await app.listen({ host: '0.0.0.0', port: config.PORT });
+}
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, async () => {
+    await app.close();
+    await redis.quit();
+    await pool.end();
+    process.exit(0);
+  });
+}
+
+start().catch(async (error: unknown) => {
+  app.log.error({ err: error }, 'API startup failed');
+  await redis.quit().catch(() => undefined);
+  await pool.end().catch(() => undefined);
+  process.exitCode = 1;
+});

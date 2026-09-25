@@ -1,4 +1,18 @@
 ai-agent.firmspace.eu, www.ai-agent.firmspace.eu {
+	@api path /api/*
+	handle @api {
+		reverse_proxy 127.0.0.1:3010
+	}
+
+	@app path /app /app/*
+	handle @app {
+		uri strip_prefix /app
+		root * /opt/projects/ai-agent/workspace/dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle {
 	root * /opt/projects/firmspace/frontend/public
 	encode gzip
 	header {
@@ -9,4 +23,5 @@ ai-agent.firmspace.eu, www.ai-agent.firmspace.eu {
 		Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; object-src 'none'"
 	}
 	file_server
+	}
 }

@@ -1,0 +1,12 @@
+{
+  "name": "firmspace-ai-platform",
+  "private": true,
+  "workspaces": ["api", "workspace"],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "npm run build --workspace=@firmspace/api && npm run build --workspace=@firmspace/workspace",
+    "test": "npm run test --workspace=@firmspace/api && npm run test --workspace=@firmspace/workspace",
+    "typecheck": "npm run typecheck --workspace=@firmspace/api && npm run typecheck --workspace=@firmspace/workspace",
+    "lint": "npm run lint --workspace=@firmspace/api && npm run lint --workspace=@firmspace/workspace"
+  }
+}
