@@ -8,12 +8,15 @@ import { Redis } from 'ioredis';
 import { config } from './config.js';
 import { inTransaction, pool, setRequestContext, type DbClient } from './db/pool.js';
 import {
+  assistantRunSchema,
   createOrganizationSchema,
   loginSchema,
+  openAiCredentialSchema,
   registerSchema,
   selectOrganizationSchema,
   updateOrganizationSchema,
 } from './auth/schemas.js';
+import { decryptSecret, encryptSecret, type EncryptedSecret } from './integrations/secret-box.js';
 
 const SESSION_COOKIE = config.cookieSecure ? '__Host-fs_session' : 'fs_session';
 const CSRF_COOKIE = config.cookieSecure ? '__Host-fs_csrf' : 'fs_csrf';
@@ -63,6 +66,7 @@ const app = Fastify({
         'req.headers.cookie',
         'req.body.password',
         'req.body.passwordHash',
+        'req.body.apiKey',
         'res.headers.set-cookie',
       ],
       censor: '[REDACTED]',
@@ -514,6 +518,198 @@ app.get('/api/v1/organizations/current/audit', async (request, reply) => {
     );
     return { events: result.rows };
   });
+});
+
+app.get('/api/v1/integrations/openai', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client) => {
+    const result = await client.query<{ secret_hint: string; updated_at: Date }>(
+      `SELECT secret_hint, updated_at FROM provider_connections
+       WHERE organization_id = $1 AND provider = 'openai'`,
+      [session.activeOrganizationId],
+    );
+    const connection = result.rows[0];
+    return { configured: Boolean(connection), keyHint: connection ? `•••• ${connection.secret_hint}` : null, updatedAt: connection?.updated_at ?? null };
+  });
+});
+
+app.put('/api/v1/integrations/openai', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const parsed = openAiCredentialSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  const permitted = await withTenant(session, async (_client, role) => {
+    if (role !== 'owner' && role !== 'admin') throw new HttpError(403, 'permission_denied');
+    return true;
+  });
+  if (!permitted) throw new HttpError(403, 'permission_denied');
+
+  let validation: Response;
+  try {
+    validation = await fetch('https://api.openai.com/v1/models', {
+      headers: { authorization: `Bearer ${parsed.data.apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new HttpError(502, 'provider_unreachable');
+  }
+  if (validation.status === 401) throw new HttpError(400, 'openai_key_invalid');
+  if (validation.status === 403) throw new HttpError(400, 'openai_key_insufficient_permissions');
+  if (!validation.ok) throw new HttpError(502, 'provider_unavailable');
+  const modelCatalog = await validation.json() as { data?: { id?: string }[] };
+  if (!modelCatalog.data?.some((model) => model.id === 'gpt-6-luna')) throw new HttpError(400, 'openai_model_unavailable');
+
+  return withTenant(session, async (client) => {
+    const encrypted = encryptSecret(parsed.data.apiKey);
+    await client.query(
+      `INSERT INTO provider_connections
+       (organization_id, provider, secret_ciphertext, secret_iv, secret_tag, secret_hint, created_by)
+       VALUES ($1, 'openai', $2, $3, $4, $5, $6)
+       ON CONFLICT (organization_id, provider) DO UPDATE SET
+         secret_ciphertext = EXCLUDED.secret_ciphertext,
+         secret_iv = EXCLUDED.secret_iv,
+         secret_tag = EXCLUDED.secret_tag,
+         secret_hint = EXCLUDED.secret_hint,
+         created_by = EXCLUDED.created_by,
+         updated_at = now()`,
+      [session.activeOrganizationId, encrypted.ciphertext, encrypted.iv, encrypted.tag, parsed.data.apiKey.slice(-4), session.userId],
+    );
+    await writeAudit(client, request, session, 'integration.openai.connected');
+    return { configured: true, keyHint: `•••• ${parsed.data.apiKey.slice(-4)}` };
+  });
+});
+
+app.delete('/api/v1/integrations/openai', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client, role) => {
+    if (role !== 'owner' && role !== 'admin') throw new HttpError(403, 'permission_denied');
+    await client.query("DELETE FROM provider_connections WHERE organization_id = $1 AND provider = 'openai'", [session.activeOrganizationId]);
+    await writeAudit(client, request, session, 'integration.openai.removed');
+    return { configured: false };
+  });
+});
+
+app.get('/api/v1/agents/assistant/runs', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client) => {
+    const result = await client.query<{
+      id: string; status: string; prompt: string; response: string | null; error_code: string | null;
+      model: string; input_tokens: number | null; output_tokens: number | null; created_at: Date; completed_at: Date | null;
+    }>(
+      `SELECT id, status, prompt, response, error_code, model, input_tokens, output_tokens, created_at, completed_at
+       FROM agent_runs WHERE organization_id = $1 AND requested_by = $2
+       ORDER BY created_at DESC LIMIT 30`,
+      [session.activeOrganizationId, session.userId],
+    );
+    return { runs: result.rows };
+  });
+});
+
+app.get('/api/v1/agents', async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  return withTenant(session, async (client) => {
+    const result = await client.query<{
+      slug: string; version: number; name: string; category: string; description: string;
+      default_model: string; required_provider: string;
+    }>(
+      `SELECT slug, version, name, category, description, default_model, required_provider
+       FROM agent_templates WHERE status = 'active' ORDER BY name`,
+    );
+    return { agents: result.rows };
+  });
+});
+
+app.post('/api/v1/agents/assistant/run', {
+  config: { rateLimit: { max: 8, timeWindow: '1 minute' } },
+}, async (request, reply) => {
+  const session = await requireSession(request, reply);
+  if (!session) return;
+  const parsed = assistantRunSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'invalid_input' });
+  if (!session.activeOrganizationId) throw new HttpError(403, 'organization_access_required');
+
+  const runId = randomUUID();
+  const { key, template } = await withTenant(session, async (client, role) => {
+    if (role === 'viewer') throw new HttpError(403, 'permission_denied');
+    const connection = await client.query<EncryptedSecret>(
+      `SELECT secret_ciphertext AS ciphertext, secret_iv AS iv, secret_tag AS tag
+       FROM provider_connections WHERE organization_id = $1 AND provider = 'openai'`,
+      [session.activeOrganizationId],
+    );
+    const storedSecret = connection.rows[0];
+    if (!storedSecret) throw new HttpError(409, 'provider_not_configured');
+    const templateResult = await client.query<{ instructions: string; default_model: string; max_output_tokens: number }>(
+      `SELECT instructions, default_model, max_output_tokens FROM agent_templates
+       WHERE slug = 'workspace-assistant' AND status = 'active' ORDER BY version DESC LIMIT 1`,
+    );
+    const activeTemplate = templateResult.rows[0];
+    if (!activeTemplate) throw new HttpError(404, 'agent_not_available');
+    await client.query(
+      `INSERT INTO agent_runs (id, organization_id, requested_by, agent_slug, status, prompt)
+       VALUES ($1, $2, $3, 'workspace-assistant', 'running', $4)`,
+      [runId, session.activeOrganizationId, session.userId, parsed.data.prompt],
+    );
+    return { key: decryptSecret(storedSecret), template: activeTemplate };
+  });
+
+  try {
+    const providerResponse = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: template.default_model,
+        instructions: template.instructions,
+        input: parsed.data.prompt,
+        max_output_tokens: template.max_output_tokens,
+        store: false,
+        safety_identifier: createHash('sha256').update(session.userId).digest('hex'),
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!providerResponse.ok) {
+      const code = providerResponse.status === 401 || providerResponse.status === 403
+        ? 'provider_auth_failed'
+        : providerResponse.status === 429 ? 'provider_rate_limited' : 'provider_request_failed';
+      throw new HttpError(502, code);
+    }
+    const body = await providerResponse.json() as {
+      id?: string;
+      output?: { type?: string; content?: { type?: string; text?: string }[] }[];
+      usage?: { input_tokens?: number; output_tokens?: number };
+    };
+    const answer = body.output?.flatMap((item) => item.type === 'message' ? (item.content ?? []) : [])
+      .filter((content) => content.type === 'output_text')
+      .map((content) => content.text ?? '')
+      .join('\n').trim();
+    if (!answer) throw new HttpError(502, 'provider_empty_response');
+
+    await inTransaction(async (client) => {
+      await setRequestContext(client, session.userId, session.activeOrganizationId);
+      await client.query(
+        `UPDATE agent_runs SET status = 'completed', response = $1, provider_response_id = $2,
+         input_tokens = $3, output_tokens = $4, completed_at = now() WHERE id = $5 AND organization_id = $6`,
+        [answer.slice(0, 20_000), body.id ?? null, body.usage?.input_tokens ?? null, body.usage?.output_tokens ?? null, runId, session.activeOrganizationId],
+      );
+      await writeAudit(client, request, session, 'agent.run.completed', { agent: 'workspace-assistant', run_id: runId });
+    });
+    return { run: { id: runId, status: 'completed', response: answer, model: template.default_model } };
+  } catch (error) {
+    const safeCode = error instanceof HttpError ? error.code : 'provider_unavailable';
+    await inTransaction(async (client) => {
+      await setRequestContext(client, session.userId, session.activeOrganizationId);
+      await client.query(
+        `UPDATE agent_runs SET status = 'failed', error_code = $1, completed_at = now() WHERE id = $2 AND organization_id = $3`,
+        [safeCode, runId, session.activeOrganizationId],
+      );
+      await writeAudit(client, request, session, 'agent.run.failed', { agent: 'workspace-assistant', run_id: runId, error: safeCode });
+    });
+    throw error instanceof HttpError ? error : new HttpError(502, 'provider_unavailable');
+  }
 });
 
 async function start(): Promise<void> {

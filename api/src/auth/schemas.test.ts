@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loginSchema, registerSchema } from './schemas.js';
+import { assistantRunSchema, loginSchema, openAiCredentialSchema, registerSchema } from './schemas.js';
 
 describe('account input validation', () => {
   it('normalizes email and accepts a valid registration', () => {
@@ -24,5 +24,18 @@ describe('account input validation', () => {
 
   it('does not accept an invalid login email', () => {
     expect(loginSchema.safeParse({ email: 'invalid', password: 'long-enough' }).success).toBe(false);
+  });
+});
+
+describe('AI provider inputs', () => {
+  it('accepts a scoped OpenAI project key and bounded text prompt', () => {
+    expect(openAiCredentialSchema.safeParse({ apiKey: 'sk-proj-' + 'A'.repeat(28) }).success).toBe(true);
+    expect(assistantRunSchema.safeParse({ prompt: 'Formuliere eine kurze Antwort.' }).success).toBe(true);
+  });
+
+  it('rejects malformed keys, extra provider settings and oversized prompts', () => {
+    expect(openAiCredentialSchema.safeParse({ apiKey: 'not-a-key' }).success).toBe(false);
+    expect(openAiCredentialSchema.safeParse({ apiKey: 'sk-' + 'A'.repeat(25), model: 'unexpected-model' }).success).toBe(false);
+    expect(assistantRunSchema.safeParse({ prompt: 'x'.repeat(6001) }).success).toBe(false);
   });
 });

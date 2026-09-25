@@ -416,3 +416,49 @@ a { color: inherit; text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.status-connected { border-color: rgba(117,220,152,.22); color: #82d9a1; background: rgba(72,172,111,.08); }
+.provider-panel { margin-top: 14px; }
+.provider-current { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 13px 0; padding: 10px 12px; border: 1px solid rgba(157,185,195,.1); border-radius: 9px; color: #93a2a5; background: rgba(7,13,16,.45); font-size: 9px; }
+.provider-current span { display: flex; align-items: center; gap: 7px; }
+.provider-current strong { color: #dce6e4; font-family: var(--mono); font-size: 9px; }
+.provider-form { display: flex; align-items: end; gap: 10px; margin-top: 14px; }
+.provider-form label { flex: 1; }
+.provider-form input { min-height: 38px; font-family: var(--mono); }
+.provider-form .button-primary { min-height: 38px; white-space: nowrap; }
+.provider-remove { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 5px 0; border: 0; color: #d3948f; background: transparent; font-size: 9px; cursor: pointer; }
+.provider-remove:disabled { opacity: .55; cursor: wait; }
+.provider-message { margin-top: 9px; color: #b8d997; font-size: 9px; }
+.assistant-page { max-width: 970px; }
+.model-badge { padding: 7px 9px; border: 1px solid rgba(172,194,200,.14); border-radius: 8px; color: #9aabad; background: rgba(18,28,32,.8); font-family: var(--mono); font-size: 9px; }
+.provider-needed { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; padding: 13px 15px; border: 1px solid rgba(197,255,73,.15); border-radius: 11px; color: #a9c875; background: rgba(197,255,73,.035); }
+.provider-needed > svg { flex: 0 0 auto; }
+.provider-needed > div { flex: 1; }
+.provider-needed strong { color: #d9e6c4; font-size: 10px; }
+.provider-needed p { margin: 4px 0 0; color: #89969a; font-size: 9px; line-height: 1.5; }
+.provider-needed .button-secondary { min-height: 33px; white-space: nowrap; font-size: 9px; }
+.assistant-compose { margin-top: 4px; }
+.assistant-compose > label { display: block; margin-bottom: 6px; color: #e3eceb; font-size: 13px; font-weight: 650; }
+.assistant-compose > p { margin: 0 0 13px; color: #819195; font-size: 9px; }
+.assistant-compose textarea { display: block; width: 100%; min-height: 128px; resize: vertical; padding: 12px 13px; border: 1px solid rgba(157,185,195,.16); border-radius: 9px; color: #ecf3f2; background: rgba(7,13,16,.68); font: 11px/1.6 var(--sans); outline: none; }
+.assistant-compose textarea:focus { border-color: rgba(197,255,73,.48); box-shadow: 0 0 0 3px rgba(197,255,73,.06); }
+.assistant-compose textarea:disabled { opacity: .55; }
+.assistant-compose-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.assistant-compose-footer > span { color: #78878a; font-size: 8px; }
+.assistant-compose-footer .button-primary { min-height: 35px; font-size: 9px; }
+.agent-history { margin-top: 24px; }
+.agent-history > .panel-title { margin-bottom: 11px; }
+.agent-run-card { margin: 8px 0; }
+.agent-run-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.agent-run-meta time { color: #78888a; font-size: 8px; }
+.agent-run-card h3 { margin: 13px 0 7px; color: #dce6e4; font-size: 11px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-answer { margin: 0; padding: 10px 0 2px; border-top: 1px solid rgba(157,185,195,.09); color: #aebcbd; font-size: 10px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-error { margin: 7px 0 0; color: #e19c94; font-size: 9px; }
+
+@media (max-width: 720px) {
+  .provider-form { align-items: stretch; flex-direction: column; }
+  .provider-form .button-primary { align-self: flex-start; }
+  .provider-needed { align-items: flex-start; flex-wrap: wrap; }
+  .provider-needed > div { min-width: calc(100% - 40px); }
+  .provider-needed .button-secondary { margin-left: 30px; }
+}

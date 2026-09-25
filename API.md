@@ -16,5 +16,11 @@
 | PATCH | `/api/v1/organizations/current` | Переименовать организацию (owner/admin) |
 | GET | `/api/v1/organizations/current/members` | Список членов текущего tenant |
 | GET | `/api/v1/organizations/current/audit` | Последние 50 событий текущей организации |
+| GET | `/api/v1/integrations/openai` | Статус подключения без возврата ключа |
+| PUT | `/api/v1/integrations/openai` | Проверить ключ и сохранить зашифрованно (owner/admin) |
+| DELETE | `/api/v1/integrations/openai` | Удалить ключ организации (owner/admin) |
+| GET | `/api/v1/agents` | Активные версии реестра шаблонов агентов |
+| GET | `/api/v1/agents/assistant/runs` | Последние запросы текущего пользователя в tenant |
+| POST | `/api/v1/agents/assistant/run` | Запустить ограниченного текстового ассистента через OpenAI Responses API |
 
-При регистрации принимаются `fullName`, `email`, `password`, `organizationName`; при входе — `email`, `password`. Новые endpoint'ы tenant data должны использовать общий tenant context и проверку роли. OpenAPI, pagination, webhooks и API keys добавляются на соответствующих следующих этапах.
+При регистрации принимаются `fullName`, `email`, `password`, `organizationName`; при входе — `email`, `password`. Для OpenAI принимается только `apiKey`; он проверяется на доступ к модели GPT-6 Luna, шифруется AES-256-GCM и никогда не возвращается. `APP_ENCRYPTION_KEY` — отдельный серверный 32-байтовый secret. Ассистент не имеет инструментов и доступа к бизнес-системам; prompt и answer сохраняются в пределах организации.

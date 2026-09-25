@@ -42,11 +42,26 @@ describe.skipIf(!enabled)('PostgreSQL tenant isolation', () => {
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
     await client.query('INSERT INTO organizations (id, name) VALUES ($1, $2)', [tenantA, 'Tenant A']);
     await client.query("INSERT INTO organization_memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')", [tenantA, userA]);
+    await client.query(
+      `INSERT INTO provider_connections (organization_id, provider, secret_ciphertext, secret_iv, secret_tag, secret_hint)
+       VALUES ($1, 'openai', decode('01','hex'), decode('02','hex'), decode('03','hex'), 'test')`,
+      [tenantA],
+    );
+    await client.query(
+      `INSERT INTO agent_runs (id, organization_id, requested_by, agent_slug, status, prompt, response)
+       VALUES ($1, $2, $3, 'workspace-assistant', 'completed', 'private prompt', 'private response')`,
+      [randomUUID(), tenantA, userA],
+    );
 
     await client.query("SELECT set_config('app.user_id', $1, true)", [userB]);
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantB]);
     await client.query('INSERT INTO organizations (id, name) VALUES ($1, $2)', [tenantB, 'Tenant B']);
     await client.query("INSERT INTO organization_memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')", [tenantB, userB]);
+
+    const hiddenCredentials = await client.query('SELECT organization_id FROM provider_connections WHERE organization_id = $1', [tenantA]);
+    const hiddenRuns = await client.query('SELECT organization_id FROM agent_runs WHERE organization_id = $1', [tenantA]);
+    expect(hiddenCredentials.rowCount).toBe(0);
+    expect(hiddenRuns.rowCount).toBe(0);
 
     await client.query("SELECT set_config('app.user_id', $1, true)", [userA]);
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);

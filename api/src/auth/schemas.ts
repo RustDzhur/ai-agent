@@ -27,3 +27,11 @@ export const selectOrganizationSchema = z.object({
 export const updateOrganizationSchema = z.object({
   name: organizationName,
 }).strict();
+
+export const openAiCredentialSchema = z.object({
+  apiKey: z.string().trim().min(20).max(512).regex(/^sk-[A-Za-z0-9_-]+$/),
+}).strict();
+
+export const assistantRunSchema = z.object({
+  prompt: z.string().trim().min(1).max(6_000),
+}).strict();

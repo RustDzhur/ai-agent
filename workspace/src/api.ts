@@ -57,6 +57,16 @@ export const errorText = (error: unknown): string => {
     case 'email_already_registered': return 'Für diese E-Mail-Adresse besteht bereits ein Konto. Bitte melden Sie sich an.';
     case 'permission_denied': return 'Sie haben für diese Änderung keine Berechtigung.';
     case 'organization_access_required': return 'Auf diese Organisation besteht kein Zugriff.';
+    case 'provider_not_configured': return 'OpenAI ist für diese Organisation noch nicht verbunden.';
+    case 'openai_key_invalid': return 'Der OpenAI-Schlüssel wurde abgelehnt. Bitte prüfen Sie ihn und versuchen Sie es erneut.';
+    case 'openai_key_insufficient_permissions': return 'Der OpenAI-Schlüssel hat nicht die nötigen Berechtigungen.';
+    case 'openai_model_unavailable': return 'Der OpenAI-Schlüssel hat keinen Zugriff auf GPT-6 Luna.';
+    case 'provider_unreachable':
+    case 'provider_unavailable': return 'OpenAI ist gerade nicht erreichbar. Bitte versuchen Sie es später erneut.';
+    case 'provider_auth_failed': return 'Der gespeicherte OpenAI-Schlüssel ist ungültig oder wurde widerrufen.';
+    case 'provider_rate_limited': return 'Das Nutzungslimit des OpenAI-Projekts wurde erreicht. Bitte prüfen Sie die Limits.';
+    case 'provider_request_failed':
+    case 'provider_empty_response': return 'OpenAI konnte diese Anfrage nicht beantworten. Bitte versuchen Sie es erneut.';
     case 'csrf_validation_failed':
     case 'origin_not_allowed': return 'Die Sitzung ist abgelaufen. Bitte laden Sie die Seite neu.';
     default: return 'Der Dienst ist gerade nicht verfügbar. Bitte versuchen Sie es später erneut.';

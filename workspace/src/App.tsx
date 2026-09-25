@@ -2,17 +2,19 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import {
   Activity, ArrowLeft, ArrowRight, Bot, Building2, Check, ChevronDown,
   CreditCard, FileText, Files, Gauge, GitBranch, Layers3, LockKeyhole, LogOut, Menu,
-  MoreHorizontal, Network, Settings2, ShieldCheck, Sparkles,
+  MoreHorizontal, Network, Send, Settings2, ShieldCheck, Sparkles, Trash2, KeyRound,
   UsersRound, Workflow, X,
 } from 'lucide-react';
 import { api, errorText, updateCsrfToken, type Organization, type Session } from './api.ts';
 
 type Section = 'dashboard' | 'agents' | 'marketplace' | 'automations' | 'tasks' | 'documents' | 'knowledge' | 'integrations' | 'analytics' | 'team' | 'billing' | 'settings';
 type Member = { user_id: string; full_name: string; email: string; role: Organization['role']; created_at: string };
+type AgentRun = { id: string; status: 'running' | 'completed' | 'failed'; prompt: string; response: string | null; error_code: string | null; model: string; created_at: string };
+type AgentTemplate = { slug: string; version: number; name: string; category: string; description: string; default_model: string; required_provider: string };
 
 const sections: { id: Section; label: string; icon: typeof Gauge; group: string; ready: boolean }[] = [
   { id: 'dashboard', label: 'Übersicht', icon: Gauge, group: 'Arbeitsbereich', ready: true },
-  { id: 'agents', label: 'Meine Agenten', icon: Bot, group: 'KI-Team', ready: false },
+  { id: 'agents', label: 'Meine Agenten', icon: Bot, group: 'KI-Team', ready: true },
   { id: 'marketplace', label: 'Agentenkatalog', icon: Layers3, group: 'KI-Team', ready: false },
   { id: 'automations', label: 'Automatisierungen', icon: Workflow, group: 'Abläufe', ready: false },
   { id: 'tasks', label: 'Aufgaben', icon: GitBranch, group: 'Abläufe', ready: false },
@@ -224,9 +226,11 @@ function Workspace({ initialSession, onLogout }: { initialSession: Session; onLo
       <main className="content-area">
         {(error || notice) && <div className={`notice-banner${error ? ' notice-error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice}<button aria-label="Meldung schließen" onClick={() => { setError(''); setNotice(''); }}><X size={15} /></button></div>}
         {section === 'dashboard' && <Dashboard user={user} organization={activeOrganization} onNavigate={navigate} />}
+        {section === 'agents' && <AssistantArea key={activeOrganization?.id} canManage={canManage} onSettings={() => navigate('settings')} />}
         {section === 'team' && <TeamPage organization={activeOrganization} members={members} canManage={canManage} />}
         {section === 'settings' && <SettingsPage user={user} organization={activeOrganization} name={organizationName} setName={setOrganizationName} canManage={canManage} onSave={saveOrganization} saving={savingName} auditEvents={auditEvents} onLogout={() => void logout()} />}
-        {section !== 'dashboard' && section !== 'team' && section !== 'settings' && <UnavailablePage section={section} onBack={() => navigate('dashboard')} />}
+        {section === 'settings' && <OpenAiSettings key={activeOrganization?.id} canManage={canManage} />}
+        {section !== 'dashboard' && section !== 'agents' && section !== 'team' && section !== 'settings' && <UnavailablePage section={section} onBack={() => navigate('dashboard')} />}
       </main>
       <footer className="workspace-footer"><span><Brand small /> Arbeitsbereich</span><span>Funktionen werden nach Freigabe schrittweise aktiviert.</span></footer>
     </div>
@@ -260,6 +264,76 @@ function SettingsPage({ user, organization, name, setName, canManage, onSave, sa
   auditEvents: { id: string; action: string; full_name: string | null; created_at: string }[]; onLogout: () => void;
 }) {
   return <div className="subpage"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KONTOVERWALTUNG</span><h1>Einstellungen</h1><p>Kontoinformationen, Organisation und Sicherheitsereignisse.</p></div></div><div className="settings-grid"><section className="panel-card settings-panel"><div className="panel-title"><div><h2>Persönliches Konto</h2><p>Diese Angaben gehören zu Ihrem Benutzerkonto.</p></div><span className="overview-icon icon-lime"><UsersRound size={17} /></span></div><div className="settings-field"><span>Name</span><strong>{user.fullName}</strong></div><div className="settings-field"><span>E-Mail-Adresse</span><strong>{user.email}</strong></div><div className="settings-field"><span>Zugriff</span><strong>Authentifizierte Sitzung · HttpOnly-Cookie</strong></div><button className="button-secondary logout-button" onClick={onLogout}><LogOut size={15} /> Sicher abmelden</button></section><section className="panel-card settings-panel"><div className="panel-title"><div><h2>Organisation</h2><p>{organization?.name ?? 'Keine aktive Organisation'}</p></div><span className="overview-icon icon-blue"><Building2 size={17} /></span></div><form onSubmit={onSave} className="settings-form"><label>Name des Unternehmens<input value={name} onChange={(event) => setName(event.target.value)} disabled={!canManage || saving} minLength={2} maxLength={160} required /></label><label>Ihre Rolle<input value={organization ? roleLabel(organization.role) : '—'} readOnly /></label>{canManage && <button className="button-primary" type="submit" disabled={saving}>{saving ? 'Wird gespeichert …' : 'Änderungen speichern'}<ArrowRight size={15} /></button>}</form><div className="panel-footnote"><ShieldCheck size={14} /> Organisationsänderungen werden serverseitig autorisiert und protokolliert.</div></section></div><section className="panel-card audit-panel"><div className="panel-title"><div><h2>Sicherheitsprotokoll</h2><p>Die letzten erfassten Konto- und Organisationsereignisse.</p></div><span className="overview-icon icon-violet"><Activity size={17} /></span></div>{auditEvents.length ? <div className="audit-list">{auditEvents.map((event) => <div className="audit-row" key={event.id}><span className="audit-icon"><Check size={14} /></span><span><b>{auditLabel(event.action)}</b><small>{event.full_name ?? 'System'} · {new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.created_at))}</small></span></div>)}</div> : <div className="empty-inline">Für diese Organisation sind noch keine Protokolleinträge vorhanden.</div>}</section></div>;
+}
+
+function OpenAiSettings({ canManage }: { canManage: boolean }) {
+  const [configured, setConfigured] = useState(false);
+  const [keyHint, setKeyHint] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    api<{ configured: boolean; keyHint: string | null }>('/integrations/openai')
+      .then((result) => { if (alive) { setConfigured(result.configured); setKeyHint(result.keyHint); } })
+      .catch(() => { if (alive) setMessage('Der Verbindungsstatus konnte nicht geladen werden.'); });
+    return () => { alive = false; };
+  }, []);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setMessage('');
+    try {
+      const result = await api<{ configured: boolean; keyHint: string | null }>('/integrations/openai', { method: 'PUT', body: JSON.stringify({ apiKey: apiKey.trim() }) });
+      setConfigured(result.configured); setKeyHint(result.keyHint); setApiKey('');
+      setMessage('Die Verbindung wurde geprüft und sicher gespeichert.');
+    } catch (cause) { setMessage(errorText(cause)); }
+    finally { setBusy(false); }
+  }
+
+  async function remove() {
+    setBusy(true); setMessage('');
+    try { await api('/integrations/openai', { method: 'DELETE' }); setConfigured(false); setKeyHint(null); setMessage('Die Verbindung wurde entfernt.'); }
+    catch (cause) { setMessage(errorText(cause)); }
+    finally { setBusy(false); }
+  }
+
+  return <section className="panel-card provider-panel"><div className="panel-title"><div><h2>OpenAI-Verbindung</h2><p>Organisationsschlüssel für den KI-Assistenten.</p></div><span className={`status-chip ${configured ? 'status-connected' : 'status-planned'}`}>{configured ? 'VERBUNDEN' : 'NICHT VERBUNDEN'}</span></div>{configured && <div className="provider-current"><span><KeyRound size={15} /> Gespeicherter Schlüssel</span><strong>{keyHint}</strong></div>}{canManage ? <form className="provider-form" onSubmit={(event) => void save(event)}><label>{configured ? 'Schlüssel ersetzen' : 'OpenAI-Projektschlüssel'}<input type="password" autoComplete="new-password" spellCheck={false} minLength={20} maxLength={512} pattern="sk-[A-Za-z0-9_-]+" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-proj-…" required /></label><button className="button-primary" type="submit" disabled={busy || !apiKey.trim()}>{busy ? 'Wird geprüft …' : 'Sicher verbinden'}<ArrowRight size={15} /></button></form> : <p className="panel-footnote">Nur Inhaber und Administratoren können den KI-Schlüssel ändern.</p>}{configured && canManage && <button className="provider-remove" onClick={() => void remove()} disabled={busy}><Trash2 size={14} /> Verbindung entfernen</button>}<p className="panel-footnote"><ShieldCheck size={14} /> Der Schlüssel wird serverseitig verschlüsselt und nie wieder im Browser angezeigt. Prompts und Antworten werden in Ihrer Organisation gespeichert und an OpenAI gesendet.</p>{message && <div className="provider-message" role="status">{message}</div>}</section>;
+}
+
+function AssistantArea({ canManage, onSettings }: { canManage: boolean; onSettings: () => void }) {
+  const [configured, setConfigured] = useState(false);
+  const [agent, setAgent] = useState<AgentTemplate | null>(null);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [prompt, setPrompt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    const [connection, history, catalog] = await Promise.all([
+      api<{ configured: boolean }>('/integrations/openai'),
+      api<{ runs: AgentRun[] }>('/agents/assistant/runs'),
+      api<{ agents: AgentTemplate[] }>('/agents'),
+    ]);
+    setConfigured(connection.configured);
+    setRuns(history.runs);
+    setAgent(catalog.agents.find((item) => item.slug === 'workspace-assistant') ?? null);
+  }, []);
+
+  useEffect(() => { void refresh().catch((cause: unknown) => setError(errorText(cause))); }, [refresh]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError('');
+    const submittedPrompt = prompt;
+    try {
+      const result = await api<{ run: { id: string; status: 'completed'; response: string; model: string } }>('/agents/assistant/run', { method: 'POST', body: JSON.stringify({ prompt: submittedPrompt }) });
+      setRuns((current) => [{ id: result.run.id, status: 'completed', prompt: submittedPrompt, response: result.run.response, error_code: null, model: result.run.model, created_at: new Date().toISOString() }, ...current]);
+      setPrompt('');
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="subpage assistant-page"><div className="page-heading"><div><span className="page-eyebrow"><span className="live-dot" /> KI-TEAM · OPENAI</span><h1>{agent?.name ?? 'Agentenkatalog wird geladen …'}</h1><p>{agent?.description ?? 'Der Agent wird geladen.'}</p></div><span className="model-badge">{agent?.default_model ?? '—'}</span></div>{!configured && <section className="provider-needed"><KeyRound size={19} /><div><strong>OpenAI ist noch nicht verbunden</strong><p>{canManage ? 'Hinterlegen Sie einen Projektschlüssel in den Einstellungen. Ohne Verbindung wird keine Antwort simuliert.' : 'Ein Inhaber oder Administrator muss den Projektschlüssel in den Einstellungen hinterlegen.'}</p></div>{canManage && <button className="button-secondary" onClick={onSettings}>Einstellungen öffnen <ArrowRight size={14} /></button>}</section>}<section className="assistant-compose panel-card"><label htmlFor="assistant-prompt">Wobei kann ich helfen?</label><p>Der Assistent hat keinen Zugriff auf E-Mail, CRM, Dateien oder andere Unternehmenssysteme.</p><form onSubmit={(event) => void submit(event)}><textarea id="assistant-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={6000} placeholder="Beschreiben Sie die Aufgabe …" disabled={!configured || busy || !agent} required /><div className="assistant-compose-footer"><span>{prompt.length} / 6.000 Zeichen · Antwort auf Deutsch</span><button className="button-primary" type="submit" disabled={!configured || busy || !agent || !prompt.trim()}>{busy ? 'Wird ausgeführt …' : 'Anfrage senden'}<Send size={15} /></button></div></form><div className="panel-footnote"><ShieldCheck size={14} /> Anfragen werden an OpenAI gesendet, in Ihrer Organisation gespeichert und lösen keine externen Aktionen aus.</div></section>{error && <div className="form-error" role="alert">{error}</div>}<section className="agent-history"><div className="panel-title"><div><h2>Ihre letzten Anfragen</h2><p>Nur Ihre eigenen Ausführungen in dieser Organisation.</p></div><span className="panel-count">{runs.length}</span></div>{runs.length === 0 ? <div className="panel-card empty-inline">Nach Ihrer ersten Anfrage erscheinen hier Eingabe, Antwort und Status.</div> : runs.map((run) => <article className="panel-card agent-run-card" key={run.id}><div className="agent-run-meta"><span className={`status-chip ${run.status === 'completed' ? 'status-connected' : run.status === 'running' ? 'status-planned' : 'status-empty'}`}>{run.status === 'completed' ? 'ABGESCHLOSSEN' : run.status === 'running' ? 'LÄUFT' : 'FEHLGESCHLAGEN'}</span><time>{new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(run.created_at))}</time></div><h3>{run.prompt}</h3>{run.response && <p className="agent-answer">{run.response}</p>}{run.error_code && <p className="agent-error">Der Aufruf ist fehlgeschlagen ({run.error_code}). Bitte prüfen Sie die Verbindung und versuchen Sie es erneut.</p>}</article>)}</section></div>;
 }
 
 function UnavailablePage({ section, onBack }: { section: Section; onBack: () => void }) {

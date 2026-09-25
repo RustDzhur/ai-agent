@@ -8,6 +8,7 @@ const envSchema = z.object({
   PGDATABASE: z.string().min(1),
   PGUSER: z.string().min(1),
   PGPASSWORD: z.string().min(1),
+  APP_ENCRYPTION_KEY: z.string().min(1).refine((value) => Buffer.from(value, 'base64').length === 32, 'must encode exactly 32 bytes'),
   REDIS_HOST: z.string().min(1),
   REDIS_PORT: z.coerce.number().int().min(1).max(65_535).default(6379),
   REDIS_USERNAME: z.string().min(1),
