@@ -1,6 +1,7 @@
 {
   "name": "firmspace-ai-platform",
   "private": true,
+  "type": "module",
   "workspaces": ["api", "workspace"],
   "engines": { "node": ">=24" },
   "scripts": {

@@ -48,6 +48,7 @@ const redis = new Redis({
   username: config.REDIS_USERNAME,
   password: config.REDIS_PASSWORD,
   lazyConnect: true,
+  enableReadyCheck: false,
   connectTimeout: 2_000,
   maxRetriesPerRequest: 1,
   enableOfflineQueue: false,
